@@ -1,7 +1,7 @@
 id: inventory.business.feature.004
 slug: fiscal-integration
 type: business-feature
-status: prd
+status: specified
 title: Endpoint de busca para integração fiscal
 docs:
   prd: PRD.md

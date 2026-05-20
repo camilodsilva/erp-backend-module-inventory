@@ -1,7 +1,7 @@
 id: inventory.business.feature.003
 slug: feature-gate
 type: business-feature
-status: prd
+status: specified
 title: Feature gate do inventário
 docs:
   prd: PRD.md
