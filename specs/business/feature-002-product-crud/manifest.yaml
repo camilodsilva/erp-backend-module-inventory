@@ -1,0 +1,7 @@
+id: inventory.business.feature.002
+slug: product-crud
+type: business-feature
+status: in_progress
+title: CRUD de produtos
+docs:
+  prd: PRD.md

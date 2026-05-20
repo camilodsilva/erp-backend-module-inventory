@@ -1,0 +1,7 @@
+id: inventory.platform.capability.001
+slug: production-environment
+type: platform-capability
+status: prd
+title: Ambiente de produção
+docs:
+  prd: PRD.md

@@ -1,0 +1,7 @@
+id: inventory.business.feature.001
+slug: foundation
+type: business-feature
+status: in_progress
+title: Fundação do módulo de inventário
+docs:
+  prd: PRD.md

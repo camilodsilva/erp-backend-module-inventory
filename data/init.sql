@@ -1,0 +1,8 @@
+-- erp-backend-module-inventory
+--
+-- Este módulo NÃO gerencia migrations diretamente.
+-- As migrations ficam em erp-backend-module-common/data/migrations/tenant/
+-- e são executadas automaticamente no provisionamento de cada tenant.
+--
+-- Migrations deste módulo:
+--   2001_inventory_product.sql  — tabela inventory_product
