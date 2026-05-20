@@ -1,7 +1,7 @@
 # PRD — CRUD de produtos
 
 **ID:** `inventory.business.feature.002`
-**Status:** `in_progress`
+**Status:** `verified`
 
 ## Contexto
 

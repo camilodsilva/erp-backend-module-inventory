@@ -1,7 +1,7 @@
 id: inventory.business.feature.002
 slug: product-crud
 type: business-feature
-status: specified
+status: verified
 title: CRUD de produtos
 docs:
   prd: PRD.md

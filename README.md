@@ -42,6 +42,7 @@ go run src/cmd/main.go
 
 ```bash
 go test ./...
+BASE_URL=http://localhost:8082 COMMON_URL=http://localhost:8080 ./scripts/integration/product_crud.sh
 ```
 
 ## Migrations

@@ -71,7 +71,11 @@ func (h *productHttpHandler) HandleList(c *gin.Context) {
 }
 
 func (h *productHttpHandler) HandleFindByID(c *gin.Context) {
-	id := c.Param("id")
+	id, err := product.NewIdentifier(c.Param("id"))
+	if err != nil {
+		buildResponseError(c, http.StatusBadRequest, err)
+		return
+	}
 
 	p, err := h.findByIDUseCase.Execute(tenant.GetTenantID(c), id)
 	if err != nil {
@@ -83,7 +87,11 @@ func (h *productHttpHandler) HandleFindByID(c *gin.Context) {
 }
 
 func (h *productHttpHandler) HandleUpdate(c *gin.Context) {
-	id := c.Param("id")
+	id, err := product.NewIdentifier(c.Param("id"))
+	if err != nil {
+		buildResponseError(c, http.StatusBadRequest, err)
+		return
+	}
 
 	var req dto.UpdateProductRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -107,7 +115,11 @@ func (h *productHttpHandler) HandleUpdate(c *gin.Context) {
 }
 
 func (h *productHttpHandler) HandleDelete(c *gin.Context) {
-	id := c.Param("id")
+	id, err := product.NewIdentifier(c.Param("id"))
+	if err != nil {
+		buildResponseError(c, http.StatusBadRequest, err)
+		return
+	}
 
 	if err := h.deleteUseCase.Execute(tenant.GetTenantID(c), id, actorIDFromContext(c)); err != nil {
 		handleProductError(c, err)
@@ -120,9 +132,9 @@ func (h *productHttpHandler) HandleDelete(c *gin.Context) {
 func handleProductError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, product.ErrProductNotFound):
-		buildResponseError(c, http.StatusNotFound, err)
+		buildResponseError(c, http.StatusNotFound, product.ErrProductNotFound)
 	case errors.Is(err, product.ErrProductAlreadyExists):
-		buildResponseError(c, http.StatusConflict, err)
+		buildResponseError(c, http.StatusConflict, product.ErrProductAlreadyExists)
 	default:
 		log.Printf("product handler error: %v", err)
 		buildResponseError(c, http.StatusInternalServerError, errors.New("internal server error"))

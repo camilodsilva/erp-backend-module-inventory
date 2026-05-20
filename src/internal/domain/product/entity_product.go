@@ -14,10 +14,12 @@ var (
 	ErrSKUTooLong                     = errors.New("sku must have at most 60 characters")
 	ErrUnitRequired                   = errors.New("unit is required")
 	ErrUnitTooLong                    = errors.New("unit must have at most 6 characters")
+	ErrUnitPriceRequired              = errors.New("unit_price is required")
 	ErrUnitPriceInvalid               = errors.New("unit_price must be greater than or equal to 0")
 	ErrStockQuantityInvalid           = errors.New("stock_quantity must be greater than or equal to 0")
 	ErrEANInvalid                     = errors.New("ean must contain 8, 13 or 14 digits")
 	ErrFiscalProfileExternalIDInvalid = errors.New("fiscal_profile_external_id is not a valid UUID")
+	ErrProductIDInvalid               = errors.New("product id is not a valid UUID")
 )
 
 type (

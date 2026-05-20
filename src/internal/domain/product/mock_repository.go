@@ -1,11 +1,11 @@
 package product
 
 type MockProductRepository struct {
-	CreateFn      func(tenantID string, p Product) (Product, error)
-	FindAllFn     func(tenantID string, page, size int) (Page, error)
-	FindByIDFn    func(tenantID, id string) (Product, error)
-	UpdateFn      func(tenantID string, p Product) (Product, error)
-	SoftDeleteFn  func(tenantID, id, deletedBy string) error
+	CreateFn     func(tenantID string, p Product) (Product, error)
+	FindAllFn    func(tenantID string, page, size int) (Page, error)
+	FindByIDFn   func(tenantID, id string) (Product, error)
+	UpdateFn     func(tenantID string, p Product) (Product, error)
+	SoftDeleteFn func(tenantID, id, deletedBy string) error
 }
 
 func (m *MockProductRepository) Create(tenantID string, p Product) (Product, error) {

@@ -9,25 +9,25 @@ import (
 
 type (
 	CreateProductRequest struct {
-		Title                   string  `json:"title"`
-		Description             string  `json:"description"`
-		SKU                     string  `json:"sku"`
-		EAN                     string  `json:"ean"`
-		Unit                    string  `json:"unit"`
-		UnitPrice               float64 `json:"unit_price"`
-		StockQuantity           float64 `json:"stock_quantity"`
-		FiscalProfileExternalID string  `json:"fiscal_profile_external_id"`
+		Title                   string   `json:"title"`
+		Description             string   `json:"description"`
+		SKU                     string   `json:"sku"`
+		EAN                     string   `json:"ean"`
+		Unit                    string   `json:"unit"`
+		UnitPrice               *float64 `json:"unit_price"`
+		StockQuantity           float64  `json:"stock_quantity"`
+		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
 	}
 
 	UpdateProductRequest struct {
-		Title                   string  `json:"title"`
-		Description             string  `json:"description"`
-		SKU                     string  `json:"sku"`
-		EAN                     string  `json:"ean"`
-		Unit                    string  `json:"unit"`
-		UnitPrice               float64 `json:"unit_price"`
-		StockQuantity           float64 `json:"stock_quantity"`
-		FiscalProfileExternalID string  `json:"fiscal_profile_external_id"`
+		Title                   string   `json:"title"`
+		Description             string   `json:"description"`
+		SKU                     string   `json:"sku"`
+		EAN                     string   `json:"ean"`
+		Unit                    string   `json:"unit"`
+		UnitPrice               *float64 `json:"unit_price"`
+		StockQuantity           float64  `json:"stock_quantity"`
+		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
 	}
 
 	ProductResponse struct {
@@ -41,17 +41,19 @@ type (
 		StockQuantity           float64 `json:"stock_quantity"`
 		IsActive                bool    `json:"is_active"`
 		FiscalProfileExternalID string  `json:"fiscal_profile_external_id,omitempty"`
-		CreatedBy               string  `json:"created_by"`
-		UpdatedBy               string  `json:"updated_by"`
 		CreatedAt               string  `json:"created_at"`
 		UpdatedAt               string  `json:"updated_at"`
 	}
 )
 
 func (r CreateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
 	draft, errs := product.NewDraft(
 		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
-		r.UnitPrice, r.StockQuantity,
+		*r.UnitPrice, r.StockQuantity,
 		r.FiscalProfileExternalID,
 	)
 	if len(errs) > 0 {
@@ -61,9 +63,13 @@ func (r CreateProductRequest) ToDraft() (product.Draft, error) {
 }
 
 func (r UpdateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
 	draft, errs := product.NewDraft(
 		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
-		r.UnitPrice, r.StockQuantity,
+		*r.UnitPrice, r.StockQuantity,
 		r.FiscalProfileExternalID,
 	)
 	if len(errs) > 0 {
@@ -84,8 +90,6 @@ func NewProductResponse(p product.Product) ProductResponse {
 		StockQuantity:           p.StockQuantity,
 		IsActive:                p.IsActive,
 		FiscalProfileExternalID: p.FiscalProfileExternalID,
-		CreatedBy:               p.CreatedBy,
-		UpdatedBy:               p.UpdatedBy,
 		CreatedAt:               p.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:               p.UpdatedAt.UTC().Format(time.RFC3339),
 	}

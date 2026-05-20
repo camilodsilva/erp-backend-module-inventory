@@ -2,7 +2,7 @@
 
 ## Resumo Executivo
 
-SPEC retrospectivo: o domínio `product` já está implementado. Esta spec documenta os 11 arquivos criados: entidade `Product`, `Draft` com validação collect-all, `ProductFactory`, 5 use cases (create, find_all, find_by_id, update, delete), mock manual, repositório Postgres com soft delete, DTOs e handler HTTP com CRUD completo. A migration `2001_inventory_product.sql` registrada no `erp-backend-module-common` cria a tabela no schema do tenant.
+SPEC retrospectivo: o domínio `product` já está implementado. Esta spec documenta entidade `Product`, `Draft` com validação collect-all, validação de identificador UUID, `ProductFactory`, 5 use cases (create, find_all, find_by_id, update, delete), mock manual, repositório Postgres com soft delete, DTOs, handler HTTP com CRUD completo, testes unitários e teste integrado. A migration `2001_inventory_product.sql` registrada no `erp-backend-module-common` cria a tabela no schema do tenant.
 
 ---
 
@@ -12,6 +12,7 @@ SPEC retrospectivo: o domínio `product` já está implementado. Esta spec docum
 - Todas as queries parametrizadas com `$N` — sem concatenação
 - Schema do tenant interpolado via `fmt.Sprintf` com `shared.SchemaName(tenantID)` — `tenantID` vem do JWT, nunca do body
 - `created_by` e `updated_by` extraídos do contexto JWT (`actor_id`), nunca do body da request
+- `created_by` e `updated_by` persistidos para auditoria, mas não expostos no JSON público do produto
 - Soft delete preenche `deleted_at`, `deleted_by`, `updated_at`, `updated_by` — registros auditáveis
 - `fiscal_profile_external_id` tratado como UUID opaco — sem FK cross-module, sem chamada ao módulo fiscal
 - `description`, `ean`, `fiscal_profile_external_id` e `deleted_by` armazenados como nullable — omitidos do JSON com `omitempty` quando vazios
@@ -22,18 +23,20 @@ SPEC retrospectivo: o domínio `product` já está implementado. Esta spec docum
 
 1. `entity_product.go` — struct `Product`, `Page`, `Repository`, `IDGenerator`, erros de domínio, método `Update`
 2. `vo_draft.go` — `Draft`, `NewDraft` com validação collect-all (`[]error`)
-3. `factory_product.go` — `ProductFactory.Create(actorID, draft)` → `Product` com ID gerado e auditoria inicial
-4. `usecase_create.go` — orquestra factory + repositório
-5. `usecase_find_all.go` — delega paginação ao repositório
-6. `usecase_find_by_id.go` — delega busca por ID ao repositório
-7. `usecase_update.go` — busca entidade, chama `Product.Update()`, persiste
-8. `usecase_delete.go` — chama `SoftDelete` no repositório
-9. `mock_repository.go` — mock manual com campos `*Fn`
-10. `infrastructure/postgres/product.go` — repositório concreto com queries SQL, helpers de scan e mapeamento de erros
-11. `infrastructure/dto/wrapper.go` — `Paginate[T any]`
-12. `infrastructure/dto/product.go` — `CreateProductRequest`, `UpdateProductRequest`, `ProductResponse`, `NewProductPaginated`
-13. `infrastructure/rest/product.go` — `productHttpHandler` com 5 handlers
-14. (migration) `erp-backend-module-common/data/migrations/tenant/2001_inventory_product.sql`
+3. `vo_identifier.go` — validação de UUID para o identificador recebido em rotas
+4. `factory_product.go` — `ProductFactory.Create(actorID, draft)` → `Product` com ID gerado e auditoria inicial
+5. `usecase_create.go` — orquestra factory + repositório
+6. `usecase_find_all.go` — delega paginação ao repositório
+7. `usecase_find_by_id.go` — delega busca por ID ao repositório
+8. `usecase_update.go` — busca entidade, chama `Product.Update()`, persiste
+9. `usecase_delete.go` — chama `SoftDelete` no repositório
+10. `mock_repository.go` — mock manual com campos `*Fn`
+11. `infrastructure/postgres/product.go` — repositório concreto com queries SQL, helpers de scan e mapeamento de erros
+12. `infrastructure/dto/wrapper.go` — `Paginate[T any]`
+13. `infrastructure/dto/product.go` — `CreateProductRequest`, `UpdateProductRequest`, `ProductResponse`, `NewProductPaginated`
+14. `infrastructure/rest/product.go` — `productHttpHandler` com 5 handlers
+15. `scripts/integration/product_crud.sh` — teste integrado do CRUD HTTP real
+16. (migration) `erp-backend-module-common/data/migrations/tenant/2001_inventory_product.sql`
 
 ---
 
@@ -62,10 +65,12 @@ var (
 	ErrSKUTooLong                     = errors.New("sku must have at most 60 characters")
 	ErrUnitRequired                   = errors.New("unit is required")
 	ErrUnitTooLong                    = errors.New("unit must have at most 6 characters")
+	ErrUnitPriceRequired              = errors.New("unit_price is required")
 	ErrUnitPriceInvalid               = errors.New("unit_price must be greater than or equal to 0")
 	ErrStockQuantityInvalid           = errors.New("stock_quantity must be greater than or equal to 0")
 	ErrEANInvalid                     = errors.New("ean must contain 8, 13 or 14 digits")
 	ErrFiscalProfileExternalIDInvalid = errors.New("fiscal_profile_external_id is not a valid UUID")
+	ErrProductIDInvalid               = errors.New("product id is not a valid UUID")
 )
 
 type (
@@ -225,6 +230,30 @@ func isValidEAN(ean string) bool {
 		}
 	}
 	return true
+}
+```
+
+---
+
+### `src/internal/domain/product/vo_identifier.go`
+
+**Responsabilidade:** Valida o identificador de produto vindo de path params antes de chegar ao repositório Postgres.
+
+```go
+package product
+
+import (
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+func NewIdentifier(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if _, err := uuid.Parse(id); err != nil {
+		return "", ErrProductIDInvalid
+	}
+	return id, nil
 }
 ```
 
@@ -780,7 +809,7 @@ type (
 		SKU                     string  `json:"sku"`
 		EAN                     string  `json:"ean"`
 		Unit                    string  `json:"unit"`
-		UnitPrice               float64 `json:"unit_price"`
+		UnitPrice               *float64 `json:"unit_price"`
 		StockQuantity           float64 `json:"stock_quantity"`
 		FiscalProfileExternalID string  `json:"fiscal_profile_external_id"`
 	}
@@ -791,7 +820,7 @@ type (
 		SKU                     string  `json:"sku"`
 		EAN                     string  `json:"ean"`
 		Unit                    string  `json:"unit"`
-		UnitPrice               float64 `json:"unit_price"`
+		UnitPrice               *float64 `json:"unit_price"`
 		StockQuantity           float64 `json:"stock_quantity"`
 		FiscalProfileExternalID string  `json:"fiscal_profile_external_id"`
 	}
@@ -807,17 +836,19 @@ type (
 		StockQuantity           float64 `json:"stock_quantity"`
 		IsActive                bool    `json:"is_active"`
 		FiscalProfileExternalID string  `json:"fiscal_profile_external_id,omitempty"`
-		CreatedBy               string  `json:"created_by"`
-		UpdatedBy               string  `json:"updated_by"`
 		CreatedAt               string  `json:"created_at"`
 		UpdatedAt               string  `json:"updated_at"`
 	}
 )
 
 func (r CreateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
 	draft, errs := product.NewDraft(
 		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
-		r.UnitPrice, r.StockQuantity,
+		*r.UnitPrice, r.StockQuantity,
 		r.FiscalProfileExternalID,
 	)
 	if len(errs) > 0 {
@@ -827,9 +858,13 @@ func (r CreateProductRequest) ToDraft() (product.Draft, error) {
 }
 
 func (r UpdateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
 	draft, errs := product.NewDraft(
 		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
-		r.UnitPrice, r.StockQuantity,
+		*r.UnitPrice, r.StockQuantity,
 		r.FiscalProfileExternalID,
 	)
 	if len(errs) > 0 {
@@ -847,14 +882,12 @@ func NewProductResponse(p product.Product) ProductResponse {
 		EAN:                     p.EAN,
 		Unit:                    p.Unit,
 		UnitPrice:               p.UnitPrice,
-		StockQuantity:           p.StockQuantity,
-		IsActive:                p.IsActive,
-		FiscalProfileExternalID: p.FiscalProfileExternalID,
-		CreatedBy:               p.CreatedBy,
-		UpdatedBy:               p.UpdatedBy,
-		CreatedAt:               p.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:               p.UpdatedAt.UTC().Format(time.RFC3339),
-	}
+			StockQuantity:           p.StockQuantity,
+			IsActive:                p.IsActive,
+			FiscalProfileExternalID: p.FiscalProfileExternalID,
+			CreatedAt:               p.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:               p.UpdatedAt.UTC().Format(time.RFC3339),
+		}
 }
 
 func NewProductPaginated(page product.Page) Paginate[ProductResponse] {
@@ -952,7 +985,11 @@ func (h *productHttpHandler) HandleList(c *gin.Context) {
 }
 
 func (h *productHttpHandler) HandleFindByID(c *gin.Context) {
-	id := c.Param("id")
+	id, err := product.NewIdentifier(c.Param("id"))
+	if err != nil {
+		buildResponseError(c, http.StatusBadRequest, err)
+		return
+	}
 
 	p, err := h.findByIDUseCase.Execute(tenant.GetTenantID(c), id)
 	if err != nil {
@@ -964,7 +1001,11 @@ func (h *productHttpHandler) HandleFindByID(c *gin.Context) {
 }
 
 func (h *productHttpHandler) HandleUpdate(c *gin.Context) {
-	id := c.Param("id")
+	id, err := product.NewIdentifier(c.Param("id"))
+	if err != nil {
+		buildResponseError(c, http.StatusBadRequest, err)
+		return
+	}
 
 	var req dto.UpdateProductRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -988,7 +1029,11 @@ func (h *productHttpHandler) HandleUpdate(c *gin.Context) {
 }
 
 func (h *productHttpHandler) HandleDelete(c *gin.Context) {
-	id := c.Param("id")
+	id, err := product.NewIdentifier(c.Param("id"))
+	if err != nil {
+		buildResponseError(c, http.StatusBadRequest, err)
+		return
+	}
 
 	if err := h.deleteUseCase.Execute(tenant.GetTenantID(c), id, actorIDFromContext(c)); err != nil {
 		handleProductError(c, err)
@@ -1059,6 +1104,7 @@ CREATE INDEX IF NOT EXISTS idx_inventory_product_is_active
 | Arquivo | Cenários obrigatórios |
 |---------|----------------------|
 | `src/internal/domain/product/vo_draft_test.go` | Happy path completo; SKU normalizado para uppercase; `ErrTitleRequired`; `ErrSKURequired`; `ErrUnitRequired`; `ErrUnitPriceInvalid` (negativo); `ErrStockQuantityInvalid` (negativo); `ErrEANInvalid` (tamanho errado, caractere não-dígito); `ErrFiscalProfileExternalIDInvalid`; múltiplos erros retornados em uma única chamada |
+| `src/internal/domain/product/vo_identifier_test.go` | UUID válido com trim; `ErrProductIDInvalid` para ID malformado |
 | `src/internal/domain/product/usecase_create_test.go` | Happy path; `ErrProductAlreadyExists` do repositório |
 | `src/internal/domain/product/usecase_find_all_test.go` | Happy path com paginação; lista vazia |
 | `src/internal/domain/product/usecase_find_by_id_test.go` | Happy path; `ErrProductNotFound` |
@@ -1080,6 +1126,8 @@ TestProductDraft_NewDraft_EANInvalidLength
 TestProductDraft_NewDraft_EANInvalidCharacter
 TestProductDraft_NewDraft_FiscalProfileExternalIDInvalid
 TestProductDraft_NewDraft_MultipleErrors
+TestProductIdentifier_NewIdentifier_Success
+TestProductIdentifier_NewIdentifier_Invalid
 
 TestCreateProductUseCase_Execute_Success
 TestCreateProductUseCase_Execute_AlreadyExists
@@ -1096,6 +1144,16 @@ TestUpdateProductUseCase_Execute_NotFound
 TestDeleteProductUseCase_Execute_Success
 TestDeleteProductUseCase_Execute_NotFound
 ```
+
+---
+
+## Testes Integrados
+
+### Arquivo criado
+
+| Arquivo | Cenários cobertos |
+|---------|-------------------|
+| `scripts/integration/product_crud.sh` | Login de collaborator com feature `inventory`; `unit_price` obrigatório; criação com normalização de SKU/unidade; resposta sem `created_by`/`updated_by`; bloqueio de SKU duplicado; listagem; ID malformado retornando 400; busca por ID; atualização; soft delete; busca de deletado retornando 404 |
 
 ### Exemplo de estrutura (`usecase_create_test.go`)
 
