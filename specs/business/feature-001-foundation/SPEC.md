@@ -922,3 +922,17 @@ curl -i http://localhost:8082/api/inventories/access \
   -H "Authorization: Bearer <TOKEN_COM_FEATURE>"
 # Esperado: 200 {"module":"inventory","enabled":true,"can_read":true,"can_write":true,...}
 ```
+
+### Teste Integrado Automatizado
+
+```bash
+cd erp-backend-module-inventory
+COMMON_URL=http://localhost:8080 BASE_URL=http://localhost:8082 ./scripts/integration/inventory_foundation.sh
+```
+
+O script automatiza os cenários de foundation:
+
+- health sem autenticação retorna `200` com `module=inventory`;
+- access sem token retorna `401`;
+- access com token válido mas sem feature `inventory` retorna `403`;
+- access com token válido, feature `inventory` e roles `inventory.read`/`inventory.write` retorna `200` com `enabled`, `can_read`, `can_write` e `ready`.
