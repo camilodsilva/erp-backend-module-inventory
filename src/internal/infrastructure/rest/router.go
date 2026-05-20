@@ -65,14 +65,3 @@ func actorIDFromContext(c *gin.Context) string {
 	return c.GetString("actor_id")
 }
 
-func rolesFromContext(c *gin.Context) []string {
-	raw, ok := c.Get("roles")
-	if !ok {
-		return make([]string, 0)
-	}
-	roles, ok := raw.([]string)
-	if !ok {
-		return make([]string, 0)
-	}
-	return roles
-}

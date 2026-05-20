@@ -36,7 +36,7 @@ func CanWriteFeature(roles []string, feature string) bool {
 
 func RequireFeatureRead(feature string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !CanReadFeature(rolesFromContext(c), feature) {
+		if !CanReadFeature(RolesFromContext(c), feature) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "forbidden"})
 			return
 		}
@@ -47,7 +47,7 @@ func RequireFeatureRead(feature string) gin.HandlerFunc {
 
 func RequireFeatureWrite(feature string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !CanWriteFeature(rolesFromContext(c), feature) {
+		if !CanWriteFeature(RolesFromContext(c), feature) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "forbidden"})
 			return
 		}
@@ -56,7 +56,7 @@ func RequireFeatureWrite(feature string) gin.HandlerFunc {
 	}
 }
 
-func rolesFromContext(c *gin.Context) []string {
+func RolesFromContext(c *gin.Context) []string {
 	raw, ok := c.Get("roles")
 	if !ok {
 		return make([]string, 0)

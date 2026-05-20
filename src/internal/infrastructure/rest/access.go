@@ -23,7 +23,7 @@ func newAccessHttpHandler() *accessHttpHandler {
 }
 
 func (h *accessHttpHandler) HandleCheck(c *gin.Context) {
-	roles := rolesFromContext(c)
+	roles := auth.RolesFromContext(c)
 	draft, err := access.NewDraft(
 		tenant.GetTenantID(c),
 		auth.CanReadFeature(roles, access.ModuleInventory),

@@ -1,7 +1,7 @@
 id: inventory.business.feature.001
 slug: foundation
 type: business-feature
-status: specified
+status: verified
 title: Fundação do módulo de inventário
 docs:
   prd: PRD.md

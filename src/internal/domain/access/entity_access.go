@@ -6,14 +6,16 @@ var ErrAccessTenantRequired = errors.New("tenant id is required")
 
 const ModuleInventory = "inventory"
 
-type AccessStatus struct {
-	Module              string
-	Enabled             bool
-	CanRead             bool
-	CanWrite            bool
-	Ready               bool
-	PendingRequirements []string
-}
+type (
+	AccessStatus struct {
+		Module              string
+		Enabled             bool
+		CanRead             bool
+		CanWrite            bool
+		Ready               bool
+		PendingRequirements []string
+	}
+)
 
 func NewAccessStatus(canRead, canWrite bool) AccessStatus {
 	return AccessStatus{
