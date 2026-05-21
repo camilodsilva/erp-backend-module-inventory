@@ -28,7 +28,7 @@ Cada entrega deve conter ou declarar `manifest.yaml`, `PRD.md` e, quando pronta 
 
 | ID | Entrega | Status | Specs | Evidência |
 |---|---|---|---|---|
-| `inventory.platform.capability.001` | Ambiente de produção | `prd` | [specs/platform/capability-001-production-environment](specs/platform/capability-001-production-environment/) | PRD criada; checklist operacional pendente |
+| `inventory.platform.capability.001` | Ambiente de produção | `specified` | [specs/platform/capability-001-production-environment](specs/platform/capability-001-production-environment/) | SPEC criada; configuração externa GitHub/VPS pendente |
 
 ## Estados Permitidos
 

@@ -7,9 +7,16 @@ COMMON_DIR="$(cd "$MODULE_DIR/../erp-backend-module-common" && pwd)"
 
 BASE_URL="${BASE_URL:-http://localhost:8082}"
 COMMON_URL="${COMMON_URL:-http://localhost:8080}"
+POSTGRES_CONTAINER=postgres-erp-it
+POSTGRES_DB=erp_common
+POSTGRES_USER=postgres
+POSTGRES_PORT=55432
 TENANT_WITH_FEATURE_ID="01980f01-0000-7000-8000-000000000011"
 TENANT_WITHOUT_FEATURE_ID="01980f01-0000-7000-8000-000000000022"
 SYSTEM_ACTOR_ID="00000000-0000-0000-0000-000000000000"
+
+psql_exec() { docker exec "$POSTGRES_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"; }
+psql_file() { docker exec -i "$POSTGRES_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"; }
 
 fail()                 { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 assert_status()        { [ "$2" = "$3" ] || fail "$1 expected HTTP $2, got $3"; printf 'PASS: %s\n' "$1"; }
@@ -17,7 +24,7 @@ assert_body_contains() { printf '%s' "$2" | grep -F -q "$3" || fail "$1 missing 
 json_field()           { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" | head -1; }
 
 reset_database() {
-  docker exec postgres psql -U postgres -d erp_common -c "
+  psql_exec -c "
 TRUNCATE TABLE
   public.manager_roles,
   public.company_collaborator_roles,
@@ -30,17 +37,17 @@ TRUNCATE TABLE
 RESTART IDENTITY CASCADE;
 " >/dev/null
 
-  for schema in $(docker exec postgres psql -U postgres -d erp_common -Atc \
+  for schema in $(psql_exec -Atc \
     "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 't\\_%' ESCAPE '\\';"); do
-    docker exec postgres psql -U postgres -d erp_common -c "DROP SCHEMA IF EXISTS \"$schema\" CASCADE;" >/dev/null
+    psql_exec -c "DROP SCHEMA IF EXISTS \"$schema\" CASCADE;" >/dev/null
   done
 
-  docker exec -i postgres psql -U postgres -d erp_common < "$COMMON_DIR/data/init.sql" >/dev/null
+  psql_file < "$COMMON_DIR/data/init.sql" >/dev/null
 
   local collab_hash
   collab_hash="$(cd "$COMMON_DIR" && go run ./src/cmd/gen_hash/main.go "SenhaCollab123!" | tr -d '\n')"
 
-  docker exec postgres psql -U postgres -d erp_common -c "
+  psql_exec -c "
 INSERT INTO public.companies (id, name, tenant_id, created_by, updated_by)
 VALUES
   ('01980f01-0000-7000-8000-000000000001', 'Empresa Inventory Habilitada',
