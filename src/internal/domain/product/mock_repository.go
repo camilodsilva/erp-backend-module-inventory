@@ -2,7 +2,7 @@ package product
 
 type MockProductRepository struct {
 	CreateFn     func(tenantID string, p Product) (Product, error)
-	FindAllFn    func(tenantID string, page, size int) (Page, error)
+	FindAllFn    func(tenantID string, page, size int, q string) (Page, error)
 	FindByIDFn   func(tenantID, id string) (Product, error)
 	UpdateFn     func(tenantID string, p Product) (Product, error)
 	SoftDeleteFn func(tenantID, id, deletedBy string) error
@@ -12,8 +12,8 @@ func (m *MockProductRepository) Create(tenantID string, p Product) (Product, err
 	return m.CreateFn(tenantID, p)
 }
 
-func (m *MockProductRepository) FindAll(tenantID string, page, size int) (Page, error) {
-	return m.FindAllFn(tenantID, page, size)
+func (m *MockProductRepository) FindAll(tenantID string, page, size int, q string) (Page, error) {
+	return m.FindAllFn(tenantID, page, size, q)
 }
 
 func (m *MockProductRepository) FindByID(tenantID, id string) (Product, error) {

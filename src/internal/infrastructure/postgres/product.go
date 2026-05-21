@@ -37,8 +37,24 @@ WHERE deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2`
 
+	findAllProductsWithSearchQuery = `
+SELECT id, title, description, sku, ean, unit,
+       unit_price, stock_quantity, is_active,
+       fiscal_profile_external_id,
+       created_by, updated_by, created_at, updated_at, deleted_at, deleted_by
+FROM %s.inventory_product
+WHERE deleted_at IS NULL
+  AND (title ILIKE $3 OR sku ILIKE $3)
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2`
+
 	countProductsQuery = `
 SELECT COUNT(*) FROM %s.inventory_product WHERE deleted_at IS NULL`
+
+	countProductsWithSearchQuery = `
+SELECT COUNT(*) FROM %s.inventory_product
+WHERE deleted_at IS NULL
+  AND (title ILIKE $1 OR sku ILIKE $1)`
 
 	findProductByIDQuery = `
 SELECT id, title, description, sku, ean, unit,
@@ -110,24 +126,40 @@ func (r *ProductPostgresRepository) Create(tenantID string, p product.Product) (
 	return created, nil
 }
 
-func (r *ProductPostgresRepository) FindAll(tenantID string, page, size int) (product.Page, error) {
+func (r *ProductPostgresRepository) FindAll(tenantID string, page, size int, q string) (product.Page, error) {
 	schema := shared.SchemaName(tenantID)
 	page, size = normalizePagination(page, size)
 	offset := (page - 1) * size
 
-	rows, err := r.db.Query(fmt.Sprintf(findAllProductsQuery, schema), size, offset)
-	if err != nil {
-		return product.Page{}, err
+	var rows *sql.Rows
+	var err error
+	var total int
+
+	if q == "" {
+		rows, err = r.db.Query(fmt.Sprintf(findAllProductsQuery, schema), size, offset)
+		if err != nil {
+			return product.Page{}, err
+		}
+		defer rows.Close()
+
+		if err := r.db.QueryRow(fmt.Sprintf(countProductsQuery, schema)).Scan(&total); err != nil {
+			return product.Page{}, err
+		}
+	} else {
+		pattern := fmt.Sprintf("%%%s%%", q)
+		rows, err = r.db.Query(fmt.Sprintf(findAllProductsWithSearchQuery, schema), size, offset, pattern)
+		if err != nil {
+			return product.Page{}, err
+		}
+		defer rows.Close()
+
+		if err := r.db.QueryRow(fmt.Sprintf(countProductsWithSearchQuery, schema), pattern).Scan(&total); err != nil {
+			return product.Page{}, err
+		}
 	}
-	defer rows.Close()
 
 	products, err := scanProductRows(rows)
 	if err != nil {
-		return product.Page{}, err
-	}
-
-	var total int
-	if err := r.db.QueryRow(fmt.Sprintf(countProductsQuery, schema)).Scan(&total); err != nil {
 		return product.Page{}, err
 	}
 

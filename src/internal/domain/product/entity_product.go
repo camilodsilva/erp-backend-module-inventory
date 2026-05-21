@@ -52,7 +52,7 @@ type (
 
 	Repository interface {
 		Create(tenantID string, p Product) (Product, error)
-		FindAll(tenantID string, page, size int) (Page, error)
+		FindAll(tenantID string, page, size int, q string) (Page, error)
 		FindByID(tenantID, id string) (Product, error)
 		Update(tenantID string, p Product) (Product, error)
 		SoftDelete(tenantID, id, deletedBy string) error

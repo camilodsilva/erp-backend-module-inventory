@@ -313,78 +313,42 @@ func (h *productHttpHandler) HandleList(c *gin.Context) {
 
 ## Testes Unitários
 
-### Arquivo a atualizar
+### Arquivo implementado
 
-`src/internal/domain/product/usecase_find_all_test.go` — adicionar cenários para o parâmetro `q`:
+`src/internal/domain/product/usecase_find_all_test.go`
 
-| Cenário | Comportamento esperado |
-|---------|----------------------|
-| `q == ""` | repositório chamado com `q=""`, retorna todos os produtos |
-| `q == "camiseta"` | repositório chamado com `q="camiseta"`, retorna produtos filtrados |
-| repositório retorna lista vazia com `q` | `Page.Products == []`, `Page.Total == 0` |
+| Teste | Comportamento verificado |
+|-------|--------------------------|
+| `TestFindAllProductUseCase_Execute_Success` | repositório chamado com `q=""`, retorna página com produtos |
+| `TestFindAllProductUseCase_Execute_EmptyList` | repositório chamado com `q=""`, retorna página vazia |
+| `TestFindAllProductUseCase_Execute_WithSearch` | repositório chamado com `q="camiseta"`, retorna produto filtrado |
+| `TestFindAllProductUseCase_Execute_WithSearchEmptyResult` | repositório chamado com `q="xyz_inexistente"`, retorna `Total=0` e `Products=[]` |
 
-### Naming obrigatório
+---
 
-```
-TestFindAllProductUseCase_Execute_Success
-TestFindAllProductUseCase_Execute_EmptyList
-TestFindAllProductUseCase_Execute_WithSearch
-TestFindAllProductUseCase_Execute_WithSearchEmptyResult
-```
+## Testes de Integração
 
-### Exemplo de estrutura
+### Script implementado
 
-```go
-package product
+`scripts/integration/product_search.sh` — segue o mesmo padrão dos scripts existentes (`set -euo pipefail`, helpers `assert_status`/`assert_body_contains`/`assert_body_absent`, `reset_database`, IDs fixos com prefixo `01980f04-*`).
 
-import "testing"
+| ID | Cenário |
+|----|---------|
+| `INT-SEARCH-01` | login do collaborator |
+| `INT-SEARCH-02` | seed — criar Camiseta Branca P |
+| `INT-SEARCH-03` | seed — criar Calca Jeans 38 |
+| `INT-SEARCH-04` | listar sem `?q=` — retorna os dois produtos, `total:2` |
+| `INT-SEARCH-05` | `?q=camiseta` — retorna só Camiseta, `total:1`, Calca ausente |
+| `INT-SEARCH-06` | `?q=CAL` — retorna só Calca pelo SKU, `total:1`, Camiseta ausente |
+| `INT-SEARCH-07` | `?q=xyz_inexistente` — retorna `total:0` |
+| `INT-SEARCH-08` | `?q=a&page=1&size=1` — paginação com busca, `size:1`, total não zero |
+| `INT-SEARCH-09` | `?q=%20%20` (espaços) — `strings.TrimSpace` trata como vazio, retorna `total:2` |
 
-func TestFindAllProductUseCase_Execute_WithSearch(t *testing.T) {
-    expected := Page{
-        Products:   []Product{{ID: "uuid-1", Title: "Camiseta Branca", SKU: "CAM-P"}},
-        Page:       1,
-        Size:       10,
-        TotalPages: 1,
-        Total:      1,
-    }
-    repo := &MockProductRepository{
-        FindAllFn: func(tenantID string, page, size int, q string) (Page, error) {
-            if q != "camiseta" {
-                t.Errorf("expected q=camiseta, got %s", q)
-            }
-            return expected, nil
-        },
-    }
-    uc := NewFindAllUseCase(repo)
+### Como executar
 
-    got, err := uc.Execute("tenant-id", 1, 10, "camiseta")
-    if err != nil {
-        t.Fatalf("expected no error, got %v", err)
-    }
-    if got.Total != 1 {
-        t.Errorf("expected total=1, got %d", got.Total)
-    }
-}
-
-func TestFindAllProductUseCase_Execute_WithSearchEmptyResult(t *testing.T) {
-    repo := &MockProductRepository{
-        FindAllFn: func(tenantID string, page, size int, q string) (Page, error) {
-            return Page{Products: []Product{}, Page: 1, Size: 10, TotalPages: 1, Total: 0}, nil
-        },
-    }
-    uc := NewFindAllUseCase(repo)
-
-    got, err := uc.Execute("tenant-id", 1, 10, "xyz_inexistente")
-    if err != nil {
-        t.Fatalf("expected no error, got %v", err)
-    }
-    if got.Total != 0 {
-        t.Errorf("expected total=0, got %d", got.Total)
-    }
-    if len(got.Products) != 0 {
-        t.Errorf("expected empty products, got %d", len(got.Products))
-    }
-}
+```bash
+cd erp-backend-module-inventory
+bash scripts/integration/product_search.sh
 ```
 
 ---
@@ -397,7 +361,9 @@ Nenhuma tabela criada ou alterada. Sem atualização necessária.
 
 ## Arquivos Criados
 
-Nenhum.
+| Arquivo | Responsabilidade |
+|---------|-----------------|
+| `scripts/integration/product_search.sh` | Testes de integração do filtro `?q=` contra serviços reais |
 
 ---
 
@@ -416,13 +382,21 @@ cd erp-backend-module-inventory
 go build ./...
 ```
 
-### Testes
+### Testes unitários
 
 ```bash
 go test ./...
 ```
 
-### End-to-End
+### Testes de integração
+
+```bash
+# Requer: docker compose up -d, common e inventory rodando
+cd erp-backend-module-inventory
+bash scripts/integration/product_search.sh
+```
+
+### End-to-End manual
 
 ```bash
 TOKEN="<JWT com feature inventory habilitada e role inventory.write>"

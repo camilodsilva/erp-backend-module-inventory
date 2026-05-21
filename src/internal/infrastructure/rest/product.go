@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/camilodsilva/erp-erp-backend-module-inventory/src/internal/domain/product"
 	"github.com/camilodsilva/erp-erp-backend-module-inventory/src/internal/infrastructure/dto"
@@ -60,8 +61,9 @@ func (h *productHttpHandler) HandleCreate(c *gin.Context) {
 func (h *productHttpHandler) HandleList(c *gin.Context) {
 	page := parseStringToInt(c.Query("page"), 1)
 	size := parseStringToInt(c.Query("size"), 10)
+	q := strings.TrimSpace(c.Query("q"))
 
-	result, err := h.findAllUseCase.Execute(tenant.GetTenantID(c), page, size)
+	result, err := h.findAllUseCase.Execute(tenant.GetTenantID(c), page, size, q)
 	if err != nil {
 		handleProductError(c, err)
 		return
