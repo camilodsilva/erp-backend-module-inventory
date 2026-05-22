@@ -1310,3 +1310,18 @@ curl -s -X POST http://localhost:8082/api/inventories/products \
   -d '{"title":"Outra","sku":"CAM-BRA-P","unit":"UN","unit_price":10}' | jq .
 # Esperado: 409 {"message":"product with this SKU already exists"}
 ```
+
+## Nao Implementado
+
+### Campos de auditoria de actor no response
+
+Os campos `created_by` e `updated_by` existem na tabela `products` (conforme premissas de auditoria do `CLAUDE.md`) mas **nao sao expostos** no response JSON dos endpoints `GET /api/inventories/products/:id` e `GET /api/inventories/products`.
+
+O DTO atual (`ProductResponse` em `dto/product.go`) omite esses campos intencionalmente para manter o contrato minimo do MVP.
+
+**Impacto:** o frontend nao consegue exibir "Criado por" e "Atualizado por" na secao de Rastreabilidade da tela de detalhe do produto, que segue o padrao de auditoria definido em `COMPONETS.md` (linhas 215-216).
+
+**O que e necessario para implementar:**
+- Adicionar `CreatedBy string` e `UpdatedBy string` ao struct `ProductResponse` em `src/internal/infrastructure/dto/product.go`
+- Preencher os campos no mapeador `ToProductResponse` lendo `product.CreatedBy` e `product.UpdatedBy`
+- Garantir que o repositorio Postgres retorna esses campos nas queries `SELECT` de `FindByID` e `FindAll`
