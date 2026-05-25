@@ -1325,3 +1325,1401 @@ O DTO atual (`ProductResponse` em `dto/product.go`) omite esses campos intencion
 - Adicionar `CreatedBy string` e `UpdatedBy string` ao struct `ProductResponse` em `src/internal/infrastructure/dto/product.go`
 - Preencher os campos no mapeador `ToProductResponse` lendo `product.CreatedBy` e `product.UpdatedBy`
 - Garantir que o repositorio Postgres retorna esses campos nas queries `SELECT` de `FindByID` e `FindAll`
+
+---
+
+# Emenda v1 — Campos Fiscais Fixos no Produto
+
+## Resumo Executivo
+
+Emenda ao domínio `product`: 6 arquivos modificados, 1 migration criada. Adiciona `NCM string`, `Origin string`, `CEST *string` à entidade e ao Draft; propaga pela factory; atualiza queries SQL; expõe os campos no DTO. Nenhum arquivo deletado. Handler REST e router permanecem inalterados.
+
+---
+
+## Impacto em Segurança e LGPD
+
+- `ncm` e `origin` obrigatórios; `cest` opcional — validados no `Draft` antes de qualquer persistência
+- Queries parametrizadas: todos os `$N` mantidos; `fmt.Sprintf` apenas para interpolar schema derivado de `shared.SchemaName(tenantID)`
+- Migration additive: `ALTER TABLE … ADD COLUMN IF NOT EXISTS` — sem remoção de dados
+
+---
+
+## Ordem de Implementação
+
+1. `entity_product.go` — adiciona campos e erros novos; atualiza `Update()`
+2. `vo_draft.go` — adiciona `NCM`, `Origin`, `CEST` ao Draft; atualiza `NewDraft` e `validateDraft` (inline)
+3. `factory_product.go` — propaga novos campos do Draft para a entidade
+4. `infrastructure/postgres/product.go` — atualiza todas as queries e funções de scan
+5. `infrastructure/dto/product.go` — adiciona campos nos requests e na response
+6. `domain/product/vo_draft_test.go` — novos cenários de validação + atualiza helper
+7. `erp-backend-module-common/data/migrations/tenant/2002_inventory_product_fiscal_fields.sql` — nova migration
+
+---
+
+## Arquivos Modificados
+
+### `erp-backend-module-inventory/src/internal/domain/product/entity_product.go`
+
+**Antes:**
+
+```go
+package product
+
+import (
+	"errors"
+	"time"
+)
+
+var (
+	ErrProductNotFound                = errors.New("product not found")
+	ErrProductAlreadyExists           = errors.New("product with this SKU already exists")
+	ErrTitleRequired                  = errors.New("title is required")
+	ErrTitleTooLong                   = errors.New("title must have at most 120 characters")
+	ErrSKURequired                    = errors.New("sku is required")
+	ErrSKUTooLong                     = errors.New("sku must have at most 60 characters")
+	ErrUnitRequired                   = errors.New("unit is required")
+	ErrUnitTooLong                    = errors.New("unit must have at most 6 characters")
+	ErrUnitPriceRequired              = errors.New("unit_price is required")
+	ErrUnitPriceInvalid               = errors.New("unit_price must be greater than or equal to 0")
+	ErrStockQuantityInvalid           = errors.New("stock_quantity must be greater than or equal to 0")
+	ErrEANInvalid                     = errors.New("ean must contain 8, 13 or 14 digits")
+	ErrFiscalProfileExternalIDInvalid = errors.New("fiscal_profile_external_id is not a valid UUID")
+	ErrProductIDInvalid               = errors.New("product id is not a valid UUID")
+)
+
+type (
+	Product struct {
+		ID                      string
+		Title                   string
+		Description             string
+		SKU                     string
+		EAN                     string
+		Unit                    string
+		UnitPrice               float64
+		StockQuantity           float64
+		IsActive                bool
+		FiscalProfileExternalID string
+		CreatedBy               string
+		UpdatedBy               string
+		CreatedAt               time.Time
+		UpdatedAt               time.Time
+		DeletedAt               *time.Time
+		DeletedBy               string
+	}
+
+	Page struct {
+		Products   []Product
+		Page       int
+		Size       int
+		TotalPages int
+		Total      int
+	}
+
+	Repository interface {
+		Create(tenantID string, p Product) (Product, error)
+		FindAll(tenantID string, page, size int, q string) (Page, error)
+		FindByID(tenantID, id string) (Product, error)
+		Update(tenantID string, p Product) (Product, error)
+		SoftDelete(tenantID, id, deletedBy string) error
+	}
+
+	IDGenerator interface {
+		Generate() string
+	}
+)
+
+func (p Product) Update(draft Draft, actorID string) Product {
+	p.Title = draft.Title
+	p.Description = draft.Description
+	p.SKU = draft.SKU
+	p.EAN = draft.EAN
+	p.Unit = draft.Unit
+	p.UnitPrice = draft.UnitPrice
+	p.StockQuantity = draft.StockQuantity
+	p.FiscalProfileExternalID = draft.FiscalProfileExternalID
+	p.UpdatedBy = actorID
+	return p
+}
+```
+
+**Depois:**
+
+```go
+package product
+
+import (
+	"errors"
+	"time"
+)
+
+var (
+	ErrProductNotFound                = errors.New("product not found")
+	ErrProductAlreadyExists           = errors.New("product with this SKU already exists")
+	ErrTitleRequired                  = errors.New("title is required")
+	ErrTitleTooLong                   = errors.New("title must have at most 120 characters")
+	ErrSKURequired                    = errors.New("sku is required")
+	ErrSKUTooLong                     = errors.New("sku must have at most 60 characters")
+	ErrUnitRequired                   = errors.New("unit is required")
+	ErrUnitTooLong                    = errors.New("unit must have at most 6 characters")
+	ErrUnitPriceRequired              = errors.New("unit_price is required")
+	ErrUnitPriceInvalid               = errors.New("unit_price must be greater than or equal to 0")
+	ErrStockQuantityInvalid           = errors.New("stock_quantity must be greater than or equal to 0")
+	ErrEANInvalid                     = errors.New("ean must contain 8, 13 or 14 digits")
+	ErrFiscalProfileExternalIDInvalid = errors.New("fiscal_profile_external_id is not a valid UUID")
+	ErrProductIDInvalid               = errors.New("product id is not a valid UUID")
+	ErrNCMInvalid                     = errors.New("ncm must contain exactly 8 digits")
+	ErrOriginInvalid                  = errors.New("origin must be a single digit between 0 and 8")
+	ErrCESTInvalid                    = errors.New("cest must contain exactly 7 digits")
+)
+
+type (
+	Product struct {
+		ID                      string
+		Title                   string
+		Description             string
+		SKU                     string
+		EAN                     string
+		Unit                    string
+		UnitPrice               float64
+		StockQuantity           float64
+		IsActive                bool
+		FiscalProfileExternalID string
+		NCM                     string
+		Origin                  string
+		CEST                    *string
+		CreatedBy               string
+		UpdatedBy               string
+		CreatedAt               time.Time
+		UpdatedAt               time.Time
+		DeletedAt               *time.Time
+		DeletedBy               string
+	}
+
+	Page struct {
+		Products   []Product
+		Page       int
+		Size       int
+		TotalPages int
+		Total      int
+	}
+
+	Repository interface {
+		Create(tenantID string, p Product) (Product, error)
+		FindAll(tenantID string, page, size int, q string) (Page, error)
+		FindByID(tenantID, id string) (Product, error)
+		Update(tenantID string, p Product) (Product, error)
+		SoftDelete(tenantID, id, deletedBy string) error
+	}
+
+	IDGenerator interface {
+		Generate() string
+	}
+)
+
+func (p Product) Update(draft Draft, actorID string) Product {
+	p.Title = draft.Title
+	p.Description = draft.Description
+	p.SKU = draft.SKU
+	p.EAN = draft.EAN
+	p.Unit = draft.Unit
+	p.UnitPrice = draft.UnitPrice
+	p.StockQuantity = draft.StockQuantity
+	p.FiscalProfileExternalID = draft.FiscalProfileExternalID
+	p.NCM = draft.NCM
+	p.Origin = draft.Origin
+	p.CEST = draft.CEST
+	p.UpdatedBy = actorID
+	return p
+}
+```
+
+**O que mudou:** adicionados `NCM string`, `Origin string`, `CEST *string` à struct `Product`; adicionados `ErrNCMInvalid`, `ErrOriginInvalid`, `ErrCESTInvalid`; `Update()` propaga os três novos campos.
+
+---
+
+### `erp-backend-module-inventory/src/internal/domain/product/vo_draft.go`
+
+**Antes:**
+
+```go
+package product
+
+import (
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+type Draft struct {
+	Title                   string
+	Description             string
+	SKU                     string
+	EAN                     string
+	Unit                    string
+	UnitPrice               float64
+	StockQuantity           float64
+	FiscalProfileExternalID string
+}
+
+func NewDraft(
+	title, description, sku, ean, unit string,
+	unitPrice, stockQuantity float64,
+	fiscalProfileExternalID string,
+) (Draft, []error) {
+	var errs []error
+
+	title = strings.TrimSpace(title)
+	description = strings.TrimSpace(description)
+	sku = strings.ToUpper(strings.TrimSpace(sku))
+	ean = strings.TrimSpace(ean)
+	unit = strings.ToUpper(strings.TrimSpace(unit))
+	fiscalProfileExternalID = strings.TrimSpace(fiscalProfileExternalID)
+
+	if title == "" {
+		errs = append(errs, ErrTitleRequired)
+	} else if len(title) > 120 {
+		errs = append(errs, ErrTitleTooLong)
+	}
+
+	if sku == "" {
+		errs = append(errs, ErrSKURequired)
+	} else if len(sku) > 60 {
+		errs = append(errs, ErrSKUTooLong)
+	}
+
+	if unit == "" {
+		errs = append(errs, ErrUnitRequired)
+	} else if len(unit) > 6 {
+		errs = append(errs, ErrUnitTooLong)
+	}
+
+	if unitPrice < 0 {
+		errs = append(errs, ErrUnitPriceInvalid)
+	}
+
+	if stockQuantity < 0 {
+		errs = append(errs, ErrStockQuantityInvalid)
+	}
+
+	if ean != "" && !isValidEAN(ean) {
+		errs = append(errs, ErrEANInvalid)
+	}
+
+	if fiscalProfileExternalID != "" {
+		if _, err := uuid.Parse(fiscalProfileExternalID); err != nil {
+			errs = append(errs, ErrFiscalProfileExternalIDInvalid)
+		}
+	}
+
+	if len(errs) > 0 {
+		return Draft{}, errs
+	}
+
+	return Draft{
+		Title:                   title,
+		Description:             description,
+		SKU:                     sku,
+		EAN:                     ean,
+		Unit:                    unit,
+		UnitPrice:               unitPrice,
+		StockQuantity:           stockQuantity,
+		FiscalProfileExternalID: fiscalProfileExternalID,
+	}, nil
+}
+
+func isValidEAN(ean string) bool {
+	if len(ean) != 8 && len(ean) != 13 && len(ean) != 14 {
+		return false
+	}
+	for _, ch := range ean {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+```
+
+**Depois:**
+
+```go
+package product
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+var (
+	reNCM    = regexp.MustCompile(`^[0-9]{8}$`)
+	reOrigin = regexp.MustCompile(`^[0-8]$`)
+	reCEST   = regexp.MustCompile(`^[0-9]{7}$`)
+)
+
+type Draft struct {
+	Title                   string
+	Description             string
+	SKU                     string
+	EAN                     string
+	Unit                    string
+	UnitPrice               float64
+	StockQuantity           float64
+	FiscalProfileExternalID string
+	NCM                     string
+	Origin                  string
+	CEST                    *string
+}
+
+func NewDraft(
+	title, description, sku, ean, unit string,
+	unitPrice, stockQuantity float64,
+	fiscalProfileExternalID string,
+	ncm, origin string,
+	cest *string,
+) (Draft, []error) {
+	var errs []error
+
+	title = strings.TrimSpace(title)
+	description = strings.TrimSpace(description)
+	sku = strings.ToUpper(strings.TrimSpace(sku))
+	ean = strings.TrimSpace(ean)
+	unit = strings.ToUpper(strings.TrimSpace(unit))
+	fiscalProfileExternalID = strings.TrimSpace(fiscalProfileExternalID)
+	ncm = strings.TrimSpace(ncm)
+	origin = strings.TrimSpace(origin)
+
+	if title == "" {
+		errs = append(errs, ErrTitleRequired)
+	} else if len(title) > 120 {
+		errs = append(errs, ErrTitleTooLong)
+	}
+
+	if sku == "" {
+		errs = append(errs, ErrSKURequired)
+	} else if len(sku) > 60 {
+		errs = append(errs, ErrSKUTooLong)
+	}
+
+	if unit == "" {
+		errs = append(errs, ErrUnitRequired)
+	} else if len(unit) > 6 {
+		errs = append(errs, ErrUnitTooLong)
+	}
+
+	if unitPrice < 0 {
+		errs = append(errs, ErrUnitPriceInvalid)
+	}
+
+	if stockQuantity < 0 {
+		errs = append(errs, ErrStockQuantityInvalid)
+	}
+
+	if ean != "" && !isValidEAN(ean) {
+		errs = append(errs, ErrEANInvalid)
+	}
+
+	if fiscalProfileExternalID != "" {
+		if _, err := uuid.Parse(fiscalProfileExternalID); err != nil {
+			errs = append(errs, ErrFiscalProfileExternalIDInvalid)
+		}
+	}
+
+	if !reNCM.MatchString(ncm) {
+		errs = append(errs, ErrNCMInvalid)
+	}
+
+	if !reOrigin.MatchString(origin) {
+		errs = append(errs, ErrOriginInvalid)
+	}
+
+	if cest != nil {
+		trimmed := strings.TrimSpace(*cest)
+		cest = &trimmed
+		if !reCEST.MatchString(*cest) {
+			errs = append(errs, ErrCESTInvalid)
+		}
+	}
+
+	if len(errs) > 0 {
+		return Draft{}, errs
+	}
+
+	return Draft{
+		Title:                   title,
+		Description:             description,
+		SKU:                     sku,
+		EAN:                     ean,
+		Unit:                    unit,
+		UnitPrice:               unitPrice,
+		StockQuantity:           stockQuantity,
+		FiscalProfileExternalID: fiscalProfileExternalID,
+		NCM:                     ncm,
+		Origin:                  origin,
+		CEST:                    cest,
+	}, nil
+}
+
+func isValidEAN(ean string) bool {
+	if len(ean) != 8 && len(ean) != 13 && len(ean) != 14 {
+		return false
+	}
+	for _, ch := range ean {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+```
+
+**O que mudou:** `Draft` ganha `NCM string`, `Origin string`, `CEST *string`; `NewDraft` recebe três novos parâmetros (`ncm`, `origin`, `cest *string`) ao final da assinatura; variáveis package-level `reNCM`, `reOrigin`, `reCEST` compiladas com `regexp.MustCompile`; validação inline para os três campos; importa `regexp`.
+
+---
+
+### `erp-backend-module-inventory/src/internal/domain/product/factory_product.go`
+
+**Antes:**
+
+```go
+package product
+
+type ProductFactory struct {
+	idGenerator IDGenerator
+}
+
+func NewProductFactory(idGenerator IDGenerator) *ProductFactory {
+	return &ProductFactory{idGenerator: idGenerator}
+}
+
+func (f *ProductFactory) Create(actorID string, draft Draft) Product {
+	return Product{
+		ID:                      f.idGenerator.Generate(),
+		Title:                   draft.Title,
+		Description:             draft.Description,
+		SKU:                     draft.SKU,
+		EAN:                     draft.EAN,
+		Unit:                    draft.Unit,
+		UnitPrice:               draft.UnitPrice,
+		StockQuantity:           draft.StockQuantity,
+		IsActive:                true,
+		FiscalProfileExternalID: draft.FiscalProfileExternalID,
+		CreatedBy:               actorID,
+		UpdatedBy:               actorID,
+	}
+}
+```
+
+**Depois:**
+
+```go
+package product
+
+type ProductFactory struct {
+	idGenerator IDGenerator
+}
+
+func NewProductFactory(idGenerator IDGenerator) *ProductFactory {
+	return &ProductFactory{idGenerator: idGenerator}
+}
+
+func (f *ProductFactory) Create(actorID string, draft Draft) Product {
+	return Product{
+		ID:                      f.idGenerator.Generate(),
+		Title:                   draft.Title,
+		Description:             draft.Description,
+		SKU:                     draft.SKU,
+		EAN:                     draft.EAN,
+		Unit:                    draft.Unit,
+		UnitPrice:               draft.UnitPrice,
+		StockQuantity:           draft.StockQuantity,
+		IsActive:                true,
+		FiscalProfileExternalID: draft.FiscalProfileExternalID,
+		NCM:                     draft.NCM,
+		Origin:                  draft.Origin,
+		CEST:                    draft.CEST,
+		CreatedBy:               actorID,
+		UpdatedBy:               actorID,
+	}
+}
+```
+
+**O que mudou:** `Create()` propaga `NCM`, `Origin`, `CEST` do Draft para a entidade.
+
+---
+
+### `erp-backend-module-inventory/src/internal/infrastructure/postgres/product.go`
+
+**Antes:**
+
+```go
+// (arquivo completo — ver seção "Arquivos Criados" da SPEC original)
+// Queries sem ncm, origin, cest; scan sem esses campos.
+```
+
+Pontos-chave do estado anterior:
+- `createProductQuery`: INSERT com 12 parâmetros (`$1`–`$12`); RETURNING sem `ncm`, `origin`, `cest`
+- `findAllProductsQuery`, `findAllProductsWithSearchQuery`, `findProductByIDQuery`: SELECT sem `ncm`, `origin`, `cest`
+- `updateProductQuery`: SET com `$1`–`$9`, WHERE `$10`; RETURNING sem os campos
+- `scanProductRow` / `scanProductRows`: scan de 16 colunas sem `ncm`, `origin`, `cest`
+- `Create()`: 12 argumentos para `QueryRow`
+- `Update()`: 10 argumentos para `QueryRow`
+
+**Depois:**
+
+```go
+package postgres
+
+import (
+	"database/sql"
+	"fmt"
+
+	"github.com/camilodsilva/erp-erp-backend-module-inventory/src/internal/domain/product"
+	"github.com/camilodsilva/erp-erp-backend-module-inventory/src/internal/infrastructure/shared"
+	"github.com/lib/pq"
+)
+
+const (
+	createProductQuery = `
+INSERT INTO %s.inventory_product (
+    id, title, description, sku, ean, unit,
+    unit_price, stock_quantity, is_active,
+    fiscal_profile_external_id,
+    ncm, origin, cest,
+    created_by, updated_by
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9,
+    $10,
+    $11, $12, $13,
+    $14, $15
+)
+RETURNING id, title, description, sku, ean, unit,
+          unit_price, stock_quantity, is_active,
+          fiscal_profile_external_id,
+          ncm, origin, cest,
+          created_by, updated_by, created_at, updated_at, deleted_at, deleted_by`
+
+	findAllProductsQuery = `
+SELECT id, title, description, sku, ean, unit,
+       unit_price, stock_quantity, is_active,
+       fiscal_profile_external_id,
+       ncm, origin, cest,
+       created_by, updated_by, created_at, updated_at, deleted_at, deleted_by
+FROM %s.inventory_product
+WHERE deleted_at IS NULL
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2`
+
+	findAllProductsWithSearchQuery = `
+SELECT id, title, description, sku, ean, unit,
+       unit_price, stock_quantity, is_active,
+       fiscal_profile_external_id,
+       ncm, origin, cest,
+       created_by, updated_by, created_at, updated_at, deleted_at, deleted_by
+FROM %s.inventory_product
+WHERE deleted_at IS NULL
+  AND (title ILIKE $3 OR sku ILIKE $3)
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2`
+
+	countProductsQuery = `
+SELECT COUNT(*) FROM %s.inventory_product WHERE deleted_at IS NULL`
+
+	countProductsWithSearchQuery = `
+SELECT COUNT(*) FROM %s.inventory_product
+WHERE deleted_at IS NULL
+  AND (title ILIKE $1 OR sku ILIKE $1)`
+
+	findProductByIDQuery = `
+SELECT id, title, description, sku, ean, unit,
+       unit_price, stock_quantity, is_active,
+       fiscal_profile_external_id,
+       ncm, origin, cest,
+       created_by, updated_by, created_at, updated_at, deleted_at, deleted_by
+FROM %s.inventory_product
+WHERE id = $1 AND deleted_at IS NULL`
+
+	updateProductQuery = `
+UPDATE %s.inventory_product
+SET title = $1,
+    description = $2,
+    sku = $3,
+    ean = $4,
+    unit = $5,
+    unit_price = $6,
+    stock_quantity = $7,
+    fiscal_profile_external_id = $8,
+    ncm = $9,
+    origin = $10,
+    cest = $11,
+    updated_by = $12,
+    updated_at = now()
+WHERE id = $13 AND deleted_at IS NULL
+RETURNING id, title, description, sku, ean, unit,
+          unit_price, stock_quantity, is_active,
+          fiscal_profile_external_id,
+          ncm, origin, cest,
+          created_by, updated_by, created_at, updated_at, deleted_at, deleted_by`
+
+	softDeleteProductQuery = `
+UPDATE %s.inventory_product
+SET deleted_at = now(),
+    updated_at = now(),
+    deleted_by = $1,
+    updated_by = $2
+WHERE id = $3 AND deleted_at IS NULL
+RETURNING id`
+)
+
+type ProductPostgresRepository struct {
+	db *sql.DB
+}
+
+func NewProductPostgresRepository(db *sql.DB) *ProductPostgresRepository {
+	return &ProductPostgresRepository{db: db}
+}
+
+func (r *ProductPostgresRepository) Create(tenantID string, p product.Product) (product.Product, error) {
+	schema := shared.SchemaName(tenantID)
+	row := r.db.QueryRow(
+		fmt.Sprintf(createProductQuery, schema),
+		p.ID,
+		p.Title,
+		nullableString(p.Description),
+		p.SKU,
+		nullableString(p.EAN),
+		p.Unit,
+		p.UnitPrice,
+		p.StockQuantity,
+		p.IsActive,
+		nullableString(p.FiscalProfileExternalID),
+		p.NCM,
+		p.Origin,
+		p.CEST,
+		p.CreatedBy,
+		p.UpdatedBy,
+	)
+
+	created, err := scanProductRow(row)
+	if err != nil {
+		return product.Product{}, mapProductError(err)
+	}
+
+	return created, nil
+}
+
+// FindAll, FindByID, SoftDelete — inalterados na lógica; apenas as queries internas foram atualizadas acima.
+
+func (r *ProductPostgresRepository) Update(tenantID string, p product.Product) (product.Product, error) {
+	schema := shared.SchemaName(tenantID)
+	row := r.db.QueryRow(
+		fmt.Sprintf(updateProductQuery, schema),
+		p.Title,
+		nullableString(p.Description),
+		p.SKU,
+		nullableString(p.EAN),
+		p.Unit,
+		p.UnitPrice,
+		p.StockQuantity,
+		nullableString(p.FiscalProfileExternalID),
+		p.NCM,
+		p.Origin,
+		p.CEST,
+		p.UpdatedBy,
+		p.ID,
+	)
+
+	updated, err := scanProductRow(row)
+	if err != nil {
+		return product.Product{}, mapProductError(err)
+	}
+
+	return updated, nil
+}
+
+func scanProductRow(row *sql.Row) (product.Product, error) {
+	var p product.Product
+	var deletedAt sql.NullTime
+	var description, ean, fiscalProfileExternalID, deletedBy sql.NullString
+	var cest sql.NullString
+
+	err := row.Scan(
+		&p.ID,
+		&p.Title,
+		&description,
+		&p.SKU,
+		&ean,
+		&p.Unit,
+		&p.UnitPrice,
+		&p.StockQuantity,
+		&p.IsActive,
+		&fiscalProfileExternalID,
+		&p.NCM,
+		&p.Origin,
+		&cest,
+		&p.CreatedBy,
+		&p.UpdatedBy,
+		&p.CreatedAt,
+		&p.UpdatedAt,
+		&deletedAt,
+		&deletedBy,
+	)
+	if err != nil {
+		return product.Product{}, err
+	}
+
+	if description.Valid {
+		p.Description = description.String
+	}
+	if ean.Valid {
+		p.EAN = ean.String
+	}
+	if fiscalProfileExternalID.Valid {
+		p.FiscalProfileExternalID = fiscalProfileExternalID.String
+	}
+	if cest.Valid {
+		p.CEST = &cest.String
+	}
+	if deletedAt.Valid {
+		p.DeletedAt = &deletedAt.Time
+	}
+	if deletedBy.Valid {
+		p.DeletedBy = deletedBy.String
+	}
+
+	return p, nil
+}
+
+func scanProductRows(rows *sql.Rows) ([]product.Product, error) {
+	products := make([]product.Product, 0)
+
+	for rows.Next() {
+		var p product.Product
+		var deletedAt sql.NullTime
+		var description, ean, fiscalProfileExternalID, deletedBy sql.NullString
+		var cest sql.NullString
+
+		if err := rows.Scan(
+			&p.ID,
+			&p.Title,
+			&description,
+			&p.SKU,
+			&ean,
+			&p.Unit,
+			&p.UnitPrice,
+			&p.StockQuantity,
+			&p.IsActive,
+			&fiscalProfileExternalID,
+			&p.NCM,
+			&p.Origin,
+			&cest,
+			&p.CreatedBy,
+			&p.UpdatedBy,
+			&p.CreatedAt,
+			&p.UpdatedAt,
+			&deletedAt,
+			&deletedBy,
+		); err != nil {
+			return nil, err
+		}
+
+		if description.Valid {
+			p.Description = description.String
+		}
+		if ean.Valid {
+			p.EAN = ean.String
+		}
+		if fiscalProfileExternalID.Valid {
+			p.FiscalProfileExternalID = fiscalProfileExternalID.String
+		}
+		if cest.Valid {
+			p.CEST = &cest.String
+		}
+		if deletedAt.Valid {
+			p.DeletedAt = &deletedAt.Time
+		}
+		if deletedBy.Valid {
+			p.DeletedBy = deletedBy.String
+		}
+
+		products = append(products, p)
+	}
+
+	return products, rows.Err()
+}
+
+// mapProductError, nullableString, calcTotalPages, normalizePagination — inalterados.
+```
+
+**O que mudou:** todas as queries SELECT/INSERT/UPDATE incluem `ncm`, `origin`, `cest`; `Create` passa 15 argumentos (3 novos); `Update` passa 13 argumentos (3 novos, deslocamento de `updated_by` e `id`); `scanProductRow` e `scanProductRows` adicionam scan para `&p.NCM`, `&p.Origin` (NOT NULL, scan direto) e `cest sql.NullString` para CEST nullable; `FindAll`, `FindByID`, `SoftDelete` inalterados em lógica.
+
+---
+
+### `erp-backend-module-inventory/src/internal/infrastructure/dto/product.go`
+
+**Antes:**
+
+```go
+package dto
+
+import (
+	"errors"
+	"time"
+
+	"github.com/camilodsilva/erp-erp-backend-module-inventory/src/internal/domain/product"
+)
+
+type (
+	CreateProductRequest struct {
+		Title                   string   `json:"title"`
+		Description             string   `json:"description"`
+		SKU                     string   `json:"sku"`
+		EAN                     string   `json:"ean"`
+		Unit                    string   `json:"unit"`
+		UnitPrice               *float64 `json:"unit_price"`
+		StockQuantity           float64  `json:"stock_quantity"`
+		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
+	}
+
+	UpdateProductRequest struct {
+		Title                   string   `json:"title"`
+		Description             string   `json:"description"`
+		SKU                     string   `json:"sku"`
+		EAN                     string   `json:"ean"`
+		Unit                    string   `json:"unit"`
+		UnitPrice               *float64 `json:"unit_price"`
+		StockQuantity           float64  `json:"stock_quantity"`
+		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
+	}
+
+	ProductResponse struct {
+		ID                      string  `json:"id"`
+		Title                   string  `json:"title"`
+		Description             string  `json:"description,omitempty"`
+		SKU                     string  `json:"sku"`
+		EAN                     string  `json:"ean,omitempty"`
+		Unit                    string  `json:"unit"`
+		UnitPrice               float64 `json:"unit_price"`
+		StockQuantity           float64 `json:"stock_quantity"`
+		IsActive                bool    `json:"is_active"`
+		FiscalProfileExternalID string  `json:"fiscal_profile_external_id,omitempty"`
+		CreatedAt               string  `json:"created_at"`
+		UpdatedAt               string  `json:"updated_at"`
+	}
+)
+
+func (r CreateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
+	draft, errs := product.NewDraft(
+		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
+		*r.UnitPrice, r.StockQuantity,
+		r.FiscalProfileExternalID,
+	)
+	if len(errs) > 0 {
+		return product.Draft{}, errors.Join(errs...)
+	}
+	return draft, nil
+}
+
+func (r UpdateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
+	draft, errs := product.NewDraft(
+		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
+		*r.UnitPrice, r.StockQuantity,
+		r.FiscalProfileExternalID,
+	)
+	if len(errs) > 0 {
+		return product.Draft{}, errors.Join(errs...)
+	}
+	return draft, nil
+}
+
+func NewProductResponse(p product.Product) ProductResponse {
+	return ProductResponse{
+		ID:                      p.ID,
+		Title:                   p.Title,
+		Description:             p.Description,
+		SKU:                     p.SKU,
+		EAN:                     p.EAN,
+		Unit:                    p.Unit,
+		UnitPrice:               p.UnitPrice,
+		StockQuantity:           p.StockQuantity,
+		IsActive:                p.IsActive,
+		FiscalProfileExternalID: p.FiscalProfileExternalID,
+		CreatedAt:               p.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:               p.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// NewProductPaginated — inalterado.
+```
+
+**Depois:**
+
+```go
+package dto
+
+import (
+	"errors"
+	"time"
+
+	"github.com/camilodsilva/erp-erp-backend-module-inventory/src/internal/domain/product"
+)
+
+type (
+	CreateProductRequest struct {
+		Title                   string   `json:"title"`
+		Description             string   `json:"description"`
+		SKU                     string   `json:"sku"`
+		EAN                     string   `json:"ean"`
+		Unit                    string   `json:"unit"`
+		UnitPrice               *float64 `json:"unit_price"`
+		StockQuantity           float64  `json:"stock_quantity"`
+		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
+		NCM                     string   `json:"ncm"`
+		Origin                  string   `json:"origin"`
+		CEST                    *string  `json:"cest"`
+	}
+
+	UpdateProductRequest struct {
+		Title                   string   `json:"title"`
+		Description             string   `json:"description"`
+		SKU                     string   `json:"sku"`
+		EAN                     string   `json:"ean"`
+		Unit                    string   `json:"unit"`
+		UnitPrice               *float64 `json:"unit_price"`
+		StockQuantity           float64  `json:"stock_quantity"`
+		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
+		NCM                     string   `json:"ncm"`
+		Origin                  string   `json:"origin"`
+		CEST                    *string  `json:"cest"`
+	}
+
+	ProductResponse struct {
+		ID                      string  `json:"id"`
+		Title                   string  `json:"title"`
+		Description             string  `json:"description,omitempty"`
+		SKU                     string  `json:"sku"`
+		EAN                     string  `json:"ean,omitempty"`
+		Unit                    string  `json:"unit"`
+		UnitPrice               float64 `json:"unit_price"`
+		StockQuantity           float64 `json:"stock_quantity"`
+		IsActive                bool    `json:"is_active"`
+		FiscalProfileExternalID string  `json:"fiscal_profile_external_id,omitempty"`
+		NCM                     string  `json:"ncm"`
+		Origin                  string  `json:"origin"`
+		CEST                    *string `json:"cest,omitempty"`
+		CreatedAt               string  `json:"created_at"`
+		UpdatedAt               string  `json:"updated_at"`
+	}
+)
+
+func (r CreateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
+	draft, errs := product.NewDraft(
+		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
+		*r.UnitPrice, r.StockQuantity,
+		r.FiscalProfileExternalID,
+		r.NCM, r.Origin, r.CEST,
+	)
+	if len(errs) > 0 {
+		return product.Draft{}, errors.Join(errs...)
+	}
+	return draft, nil
+}
+
+func (r UpdateProductRequest) ToDraft() (product.Draft, error) {
+	if r.UnitPrice == nil {
+		return product.Draft{}, product.ErrUnitPriceRequired
+	}
+
+	draft, errs := product.NewDraft(
+		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
+		*r.UnitPrice, r.StockQuantity,
+		r.FiscalProfileExternalID,
+		r.NCM, r.Origin, r.CEST,
+	)
+	if len(errs) > 0 {
+		return product.Draft{}, errors.Join(errs...)
+	}
+	return draft, nil
+}
+
+func NewProductResponse(p product.Product) ProductResponse {
+	return ProductResponse{
+		ID:                      p.ID,
+		Title:                   p.Title,
+		Description:             p.Description,
+		SKU:                     p.SKU,
+		EAN:                     p.EAN,
+		Unit:                    p.Unit,
+		UnitPrice:               p.UnitPrice,
+		StockQuantity:           p.StockQuantity,
+		IsActive:                p.IsActive,
+		FiscalProfileExternalID: p.FiscalProfileExternalID,
+		NCM:                     p.NCM,
+		Origin:                  p.Origin,
+		CEST:                    p.CEST,
+		CreatedAt:               p.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:               p.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// NewProductPaginated — inalterado.
+```
+
+**O que mudou:** `CreateProductRequest` e `UpdateProductRequest` ganham `NCM string`, `Origin string`, `CEST *string`; `ProductResponse` ganha os mesmos campos (`CEST` com `omitempty`); `ToDraft()` de ambos os requests passa `r.NCM, r.Origin, r.CEST` para `NewDraft`; `NewProductResponse` popula os três campos.
+
+---
+
+### `erp-backend-module-inventory/src/internal/domain/product/vo_draft_test.go`
+
+**Antes:**
+
+```go
+package product
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestProductDraft_NewDraft_Success(t *testing.T) {
+	draft, errs := NewDraft(
+		" Camiseta Branca P ",
+		" 100% algodao ",
+		" cam-bra-p ",
+		"7891234567890",
+		" un ",
+		49.90,
+		100,
+		"01960e4a-3f2b-7d1c-8e5f-9a0b1c2d3e4f",
+	)
+	if len(errs) > 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if draft.Title != "Camiseta Branca P" {
+		t.Errorf("expected trimmed title, got %q", draft.Title)
+	}
+	if draft.Description != "100% algodao" {
+		t.Errorf("expected trimmed description, got %q", draft.Description)
+	}
+	if draft.SKU != "CAM-BRA-P" {
+		t.Errorf("expected normalized SKU, got %q", draft.SKU)
+	}
+	if draft.Unit != "UN" {
+		t.Errorf("expected normalized unit, got %q", draft.Unit)
+	}
+}
+
+func TestProductDraft_NewDraft_SKUNormalized(t *testing.T) {
+	draft, errs := NewDraft("Camiseta", "", " cam-p ", "", "UN", 49.90, 0, "")
+	if len(errs) > 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if draft.SKU != "CAM-P" {
+		t.Errorf("expected CAM-P, got %s", draft.SKU)
+	}
+}
+
+func TestProductDraft_NewDraft_UnitNormalized(t *testing.T) {
+	draft, errs := NewDraft("Camiseta", "", "CAM-P", "", " un ", 49.90, 0, "")
+	if len(errs) > 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if draft.Unit != "UN" {
+		t.Errorf("expected UN, got %s", draft.Unit)
+	}
+}
+
+func TestProductDraft_NewDraft_TitleRequired(t *testing.T) {
+	_, errs := NewDraft("", "", "CAM-P", "", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrTitleRequired)
+}
+
+func TestProductDraft_NewDraft_SKURequired(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "", "", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrSKURequired)
+}
+
+func TestProductDraft_NewDraft_UnitRequired(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrUnitRequired)
+}
+
+func TestProductDraft_NewDraft_UnitPriceNegative(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", -1, 0, "")
+	assertProductDraftError(t, errs, ErrUnitPriceInvalid)
+}
+
+func TestProductDraft_NewDraft_StockQuantityNegative(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, -1, "")
+	assertProductDraftError(t, errs, ErrStockQuantityInvalid)
+}
+
+func TestProductDraft_NewDraft_EANInvalidLength(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "123456789", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrEANInvalid)
+}
+
+func TestProductDraft_NewDraft_EANInvalidCharacter(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "789123456789A", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrEANInvalid)
+}
+
+func TestProductDraft_NewDraft_FiscalProfileExternalIDInvalid(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "invalid")
+	assertProductDraftError(t, errs, ErrFiscalProfileExternalIDInvalid)
+}
+
+func TestProductDraft_NewDraft_MultipleErrors(t *testing.T) {
+	_, errs := NewDraft("", "", "", "123", "", -1, -1, "invalid")
+
+	expected := []error{
+		ErrTitleRequired,
+		ErrSKURequired,
+		ErrUnitRequired,
+		ErrUnitPriceInvalid,
+		ErrStockQuantityInvalid,
+		ErrEANInvalid,
+		ErrFiscalProfileExternalIDInvalid,
+	}
+	for _, expectedErr := range expected {
+		assertProductDraftError(t, errs, expectedErr)
+	}
+}
+
+func assertProductDraftError(t *testing.T, errs []error, expected error) {
+	t.Helper()
+	for _, err := range errs {
+		if errors.Is(err, expected) {
+			return
+		}
+	}
+	t.Fatalf("expected %v in %v", expected, errs)
+}
+```
+
+**Depois:**
+
+```go
+package product
+
+import (
+	"errors"
+	"testing"
+)
+
+// newTestDraft é um helper que preenche valores padrão válidos para os novos campos fiscais,
+// permitindo que os testes existentes passem sem alterar suas assinaturas.
+func newTestDraft(title, description, sku, ean, unit string, unitPrice, stockQuantity float64, fiscalProfileExternalID string) (Draft, []error) {
+	return NewDraft(title, description, sku, ean, unit, unitPrice, stockQuantity, fiscalProfileExternalID, "12345678", "0", nil)
+}
+
+func TestProductDraft_NewDraft_Success(t *testing.T) {
+	draft, errs := NewDraft(
+		" Camiseta Branca P ",
+		" 100% algodao ",
+		" cam-bra-p ",
+		"7891234567890",
+		" un ",
+		49.90,
+		100,
+		"01960e4a-3f2b-7d1c-8e5f-9a0b1c2d3e4f",
+		"12345678",
+		"0",
+		nil,
+	)
+	if len(errs) > 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if draft.Title != "Camiseta Branca P" {
+		t.Errorf("expected trimmed title, got %q", draft.Title)
+	}
+	if draft.Description != "100% algodao" {
+		t.Errorf("expected trimmed description, got %q", draft.Description)
+	}
+	if draft.SKU != "CAM-BRA-P" {
+		t.Errorf("expected normalized SKU, got %q", draft.SKU)
+	}
+	if draft.Unit != "UN" {
+		t.Errorf("expected normalized unit, got %q", draft.Unit)
+	}
+}
+
+func TestProductDraft_NewDraft_SKUNormalized(t *testing.T) {
+	draft, errs := newTestDraft("Camiseta", "", " cam-p ", "", "UN", 49.90, 0, "")
+	if len(errs) > 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if draft.SKU != "CAM-P" {
+		t.Errorf("expected CAM-P, got %s", draft.SKU)
+	}
+}
+
+func TestProductDraft_NewDraft_UnitNormalized(t *testing.T) {
+	draft, errs := newTestDraft("Camiseta", "", "CAM-P", "", " un ", 49.90, 0, "")
+	if len(errs) > 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if draft.Unit != "UN" {
+		t.Errorf("expected UN, got %s", draft.Unit)
+	}
+}
+
+func TestProductDraft_NewDraft_TitleRequired(t *testing.T) {
+	_, errs := newTestDraft("", "", "CAM-P", "", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrTitleRequired)
+}
+
+func TestProductDraft_NewDraft_SKURequired(t *testing.T) {
+	_, errs := newTestDraft("Camiseta", "", "", "", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrSKURequired)
+}
+
+func TestProductDraft_NewDraft_UnitRequired(t *testing.T) {
+	_, errs := newTestDraft("Camiseta", "", "CAM-P", "", "", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrUnitRequired)
+}
+
+func TestProductDraft_NewDraft_UnitPriceNegative(t *testing.T) {
+	_, errs := newTestDraft("Camiseta", "", "CAM-P", "", "UN", -1, 0, "")
+	assertProductDraftError(t, errs, ErrUnitPriceInvalid)
+}
+
+func TestProductDraft_NewDraft_StockQuantityNegative(t *testing.T) {
+	_, errs := newTestDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, -1, "")
+	assertProductDraftError(t, errs, ErrStockQuantityInvalid)
+}
+
+func TestProductDraft_NewDraft_EANInvalidLength(t *testing.T) {
+	_, errs := newTestDraft("Camiseta", "", "CAM-P", "123456789", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrEANInvalid)
+}
+
+func TestProductDraft_NewDraft_EANInvalidCharacter(t *testing.T) {
+	_, errs := newTestDraft("Camiseta", "", "CAM-P", "789123456789A", "UN", 49.90, 0, "")
+	assertProductDraftError(t, errs, ErrEANInvalid)
+}
+
+func TestProductDraft_NewDraft_FiscalProfileExternalIDInvalid(t *testing.T) {
+	_, errs := newTestDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "invalid")
+	assertProductDraftError(t, errs, ErrFiscalProfileExternalIDInvalid)
+}
+
+func TestProductDraft_NewDraft_MultipleErrors(t *testing.T) {
+	_, errs := NewDraft("", "", "", "123", "", -1, -1, "invalid", "INVALID", "9", nil)
+
+	expected := []error{
+		ErrTitleRequired,
+		ErrSKURequired,
+		ErrUnitRequired,
+		ErrUnitPriceInvalid,
+		ErrStockQuantityInvalid,
+		ErrEANInvalid,
+		ErrFiscalProfileExternalIDInvalid,
+		ErrNCMInvalid,
+		ErrOriginInvalid,
+	}
+	for _, expectedErr := range expected {
+		assertProductDraftError(t, errs, expectedErr)
+	}
+}
+
+func TestProductDraft_NewDraft_NCMInvalid(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "", "1234567", "0", nil)
+	assertProductDraftError(t, errs, ErrNCMInvalid)
+}
+
+func TestProductDraft_NewDraft_OriginInvalid(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "", "12345678", "9", nil)
+	assertProductDraftError(t, errs, ErrOriginInvalid)
+}
+
+func TestProductDraft_NewDraft_OriginRequired(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "", "12345678", "", nil)
+	assertProductDraftError(t, errs, ErrOriginInvalid)
+}
+
+func TestProductDraft_NewDraft_CESTInvalid(t *testing.T) {
+	cest := "123456" // 6 dígitos — inválido (precisa de 7)
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "", "12345678", "0", &cest)
+	assertProductDraftError(t, errs, ErrCESTInvalid)
+}
+
+func TestProductDraft_NewDraft_CESTNil_Valid(t *testing.T) {
+	_, errs := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "", "12345678", "0", nil)
+	if len(errs) > 0 {
+		t.Fatalf("expected no errors when cest is nil, got %v", errs)
+	}
+}
+
+func assertProductDraftError(t *testing.T, errs []error, expected error) {
+	t.Helper()
+	for _, err := range errs {
+		if errors.Is(err, expected) {
+			return
+		}
+	}
+	t.Fatalf("expected %v in %v", expected, errs)
+}
+```
+
+**O que mudou:** introduzido helper `newTestDraft` que fixa `ncm="12345678"`, `origin="0"`, `cest=nil` para manter compatibilidade dos testes existentes; todas as chamadas diretas a `NewDraft` nos testes existentes atualizadas para a nova assinatura (11 parâmetros); `TestProductDraft_NewDraft_MultipleErrors` atualizado para incluir `ErrNCMInvalid` e `ErrOriginInvalid`; adicionados 5 novos cenários: `TestProductDraft_NewDraft_NCMInvalid`, `TestProductDraft_NewDraft_OriginInvalid`, `TestProductDraft_NewDraft_OriginRequired`, `TestProductDraft_NewDraft_CESTInvalid`, `TestProductDraft_NewDraft_CESTNil_Valid`.
+
+---
+
+## Arquivo Criado
+
+### `erp-backend-module-common/data/migrations/tenant/2002_inventory_product_fiscal_fields.sql`
+
+**Responsabilidade:** adiciona as colunas fiscais fixas à tabela `inventory_product` de cada tenant de forma idempotente.
+
+```sql
+ALTER TABLE {{schema}}.inventory_product
+    ADD COLUMN IF NOT EXISTS ncm    varchar(8) NOT NULL DEFAULT '';
+
+ALTER TABLE {{schema}}.inventory_product
+    ADD COLUMN IF NOT EXISTS origin varchar(1) NOT NULL DEFAULT '0';
+
+ALTER TABLE {{schema}}.inventory_product
+    ADD CONSTRAINT inventory_product__origin_ck
+        CHECK (origin ~ '^[0-8]$') NOT VALID;
+
+ALTER TABLE {{schema}}.inventory_product
+    ADD COLUMN IF NOT EXISTS cest   varchar(7);
+
+ALTER TABLE {{schema}}.inventory_product
+    ADD CONSTRAINT inventory_product__cest_ck
+        CHECK (cest IS NULL OR cest ~ '^[0-9]{7}$') NOT VALID;
+
+ALTER TABLE {{schema}}.inventory_product
+    ADD CONSTRAINT inventory_product__ncm_ck
+        CHECK (ncm = '' OR ncm ~ '^[0-9]{8}$') NOT VALID;
+```
+
+---
+
+## Checklist de Verificação
+
+### Build
+```bash
+cd erp-backend-module-inventory
+go build ./...
+```
+
+### Testes
+```bash
+go test ./...
+```
