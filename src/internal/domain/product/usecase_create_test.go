@@ -21,7 +21,7 @@ func TestCreateProductUseCase_Execute_Success(t *testing.T) {
 	factory := NewProductFactory(&stubIDGenerator{id: "uuid-1"})
 	uc := NewCreateUseCase(repo, factory)
 
-	draft, _ := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "")
+	draft, _ := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "", "01012100", "0", nil)
 	got, err := uc.Execute("tenant-id", "actor-id", draft)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -40,7 +40,7 @@ func TestCreateProductUseCase_Execute_AlreadyExists(t *testing.T) {
 	factory := NewProductFactory(&stubIDGenerator{id: "uuid-1"})
 	uc := NewCreateUseCase(repo, factory)
 
-	draft, _ := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "")
+	draft, _ := NewDraft("Camiseta", "", "CAM-P", "", "UN", 49.90, 0, "", "01012100", "0", nil)
 	_, err := uc.Execute("tenant-id", "actor-id", draft)
 	if !errors.Is(err, ErrProductAlreadyExists) {
 		t.Errorf("expected ErrProductAlreadyExists, got %v", err)

@@ -15,22 +15,26 @@ INSERT INTO %s.inventory_product (
     id, title, description, sku, ean, unit,
     unit_price, stock_quantity, is_active,
     fiscal_profile_external_id,
+    ncm, origin, cest,
     created_by, updated_by
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9,
     $10,
-    $11, $12
+    $11, $12, $13,
+    $14, $15
 )
 RETURNING id, title, description, sku, ean, unit,
           unit_price, stock_quantity, is_active,
           fiscal_profile_external_id,
+          ncm, origin, cest,
           created_by, updated_by, created_at, updated_at, deleted_at, deleted_by`
 
 	findAllProductsQuery = `
 SELECT id, title, description, sku, ean, unit,
        unit_price, stock_quantity, is_active,
        fiscal_profile_external_id,
+       ncm, origin, cest,
        created_by, updated_by, created_at, updated_at, deleted_at, deleted_by
 FROM %s.inventory_product
 WHERE deleted_at IS NULL
@@ -41,12 +45,13 @@ LIMIT $1 OFFSET $2`
 SELECT id, title, description, sku, ean, unit,
        unit_price, stock_quantity, is_active,
        fiscal_profile_external_id,
+       ncm, origin, cest,
        created_by, updated_by, created_at, updated_at, deleted_at, deleted_by
 FROM %s.inventory_product
 WHERE deleted_at IS NULL
-  AND (title ILIKE $3 OR sku ILIKE $3)
+  AND (title ILIKE $1 OR sku ILIKE $1)
 ORDER BY created_at DESC
-LIMIT $1 OFFSET $2`
+LIMIT $2 OFFSET $3`
 
 	countProductsQuery = `
 SELECT COUNT(*) FROM %s.inventory_product WHERE deleted_at IS NULL`
@@ -60,6 +65,7 @@ WHERE deleted_at IS NULL
 SELECT id, title, description, sku, ean, unit,
        unit_price, stock_quantity, is_active,
        fiscal_profile_external_id,
+       ncm, origin, cest,
        created_by, updated_by, created_at, updated_at, deleted_at, deleted_by
 FROM %s.inventory_product
 WHERE id = $1 AND deleted_at IS NULL`
@@ -74,12 +80,16 @@ SET title = $1,
     unit_price = $6,
     stock_quantity = $7,
     fiscal_profile_external_id = $8,
-    updated_by = $9,
+    ncm = $9,
+    origin = $10,
+    cest = $11,
+    updated_by = $12,
     updated_at = now()
-WHERE id = $10 AND deleted_at IS NULL
+WHERE id = $13 AND deleted_at IS NULL
 RETURNING id, title, description, sku, ean, unit,
           unit_price, stock_quantity, is_active,
           fiscal_profile_external_id,
+          ncm, origin, cest,
           created_by, updated_by, created_at, updated_at, deleted_at, deleted_by`
 
 	softDeleteProductQuery = `
@@ -114,6 +124,9 @@ func (r *ProductPostgresRepository) Create(tenantID string, p product.Product) (
 		p.StockQuantity,
 		p.IsActive,
 		nullableString(p.FiscalProfileExternalID),
+		p.NCM,
+		p.Origin,
+		p.CEST,
 		p.CreatedBy,
 		p.UpdatedBy,
 	)
@@ -140,23 +153,22 @@ func (r *ProductPostgresRepository) FindAll(tenantID string, page, size int, q s
 		if err != nil {
 			return product.Page{}, err
 		}
-		defer rows.Close()
-
 		if err := r.db.QueryRow(fmt.Sprintf(countProductsQuery, schema)).Scan(&total); err != nil {
+			rows.Close()
 			return product.Page{}, err
 		}
 	} else {
 		pattern := fmt.Sprintf("%%%s%%", q)
-		rows, err = r.db.Query(fmt.Sprintf(findAllProductsWithSearchQuery, schema), size, offset, pattern)
+		rows, err = r.db.Query(fmt.Sprintf(findAllProductsWithSearchQuery, schema), pattern, size, offset)
 		if err != nil {
 			return product.Page{}, err
 		}
-		defer rows.Close()
-
 		if err := r.db.QueryRow(fmt.Sprintf(countProductsWithSearchQuery, schema), pattern).Scan(&total); err != nil {
+			rows.Close()
 			return product.Page{}, err
 		}
 	}
+	defer rows.Close()
 
 	products, err := scanProductRows(rows)
 	if err != nil {
@@ -196,6 +208,9 @@ func (r *ProductPostgresRepository) Update(tenantID string, p product.Product) (
 		p.UnitPrice,
 		p.StockQuantity,
 		nullableString(p.FiscalProfileExternalID),
+		p.NCM,
+		p.Origin,
+		p.CEST,
 		p.UpdatedBy,
 		p.ID,
 	)
@@ -219,6 +234,7 @@ func scanProductRow(row *sql.Row) (product.Product, error) {
 	var p product.Product
 	var deletedAt sql.NullTime
 	var description, ean, fiscalProfileExternalID, deletedBy sql.NullString
+	var cest sql.NullString
 
 	err := row.Scan(
 		&p.ID,
@@ -231,6 +247,9 @@ func scanProductRow(row *sql.Row) (product.Product, error) {
 		&p.StockQuantity,
 		&p.IsActive,
 		&fiscalProfileExternalID,
+		&p.NCM,
+		&p.Origin,
+		&cest,
 		&p.CreatedBy,
 		&p.UpdatedBy,
 		&p.CreatedAt,
@@ -251,6 +270,9 @@ func scanProductRow(row *sql.Row) (product.Product, error) {
 	if fiscalProfileExternalID.Valid {
 		p.FiscalProfileExternalID = fiscalProfileExternalID.String
 	}
+	if cest.Valid {
+		p.CEST = &cest.String
+	}
 	if deletedAt.Valid {
 		p.DeletedAt = &deletedAt.Time
 	}
@@ -268,6 +290,7 @@ func scanProductRows(rows *sql.Rows) ([]product.Product, error) {
 		var p product.Product
 		var deletedAt sql.NullTime
 		var description, ean, fiscalProfileExternalID, deletedBy sql.NullString
+		var cest sql.NullString
 
 		if err := rows.Scan(
 			&p.ID,
@@ -280,6 +303,9 @@ func scanProductRows(rows *sql.Rows) ([]product.Product, error) {
 			&p.StockQuantity,
 			&p.IsActive,
 			&fiscalProfileExternalID,
+			&p.NCM,
+			&p.Origin,
+			&cest,
 			&p.CreatedBy,
 			&p.UpdatedBy,
 			&p.CreatedAt,
@@ -298,6 +324,9 @@ func scanProductRows(rows *sql.Rows) ([]product.Product, error) {
 		}
 		if fiscalProfileExternalID.Valid {
 			p.FiscalProfileExternalID = fiscalProfileExternalID.String
+		}
+		if cest.Valid {
+			p.CEST = &cest.String
 		}
 		if deletedAt.Valid {
 			p.DeletedAt = &deletedAt.Time

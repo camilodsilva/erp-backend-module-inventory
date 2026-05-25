@@ -1,9 +1,16 @@
 package product
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
+)
+
+var (
+	reNCM    = regexp.MustCompile(`^[0-9]{8}$`)
+	reOrigin = regexp.MustCompile(`^[0-8]$`)
+	reCEST   = regexp.MustCompile(`^[0-9]{7}$`)
 )
 
 type Draft struct {
@@ -15,12 +22,17 @@ type Draft struct {
 	UnitPrice               float64
 	StockQuantity           float64
 	FiscalProfileExternalID string
+	NCM                     string
+	Origin                  string
+	CEST                    *string
 }
 
 func NewDraft(
 	title, description, sku, ean, unit string,
 	unitPrice, stockQuantity float64,
 	fiscalProfileExternalID string,
+	ncm, origin string,
+	cest *string,
 ) (Draft, []error) {
 	var errs []error
 
@@ -30,6 +42,8 @@ func NewDraft(
 	ean = strings.TrimSpace(ean)
 	unit = strings.ToUpper(strings.TrimSpace(unit))
 	fiscalProfileExternalID = strings.TrimSpace(fiscalProfileExternalID)
+	ncm = strings.TrimSpace(ncm)
+	origin = strings.TrimSpace(origin)
 
 	if title == "" {
 		errs = append(errs, ErrTitleRequired)
@@ -67,6 +81,22 @@ func NewDraft(
 		}
 	}
 
+	if !reNCM.MatchString(ncm) {
+		errs = append(errs, ErrNCMInvalid)
+	}
+
+	if !reOrigin.MatchString(origin) {
+		errs = append(errs, ErrOriginInvalid)
+	}
+
+	if cest != nil {
+		trimmed := strings.TrimSpace(*cest)
+		cest = &trimmed
+		if !reCEST.MatchString(*cest) {
+			errs = append(errs, ErrCESTInvalid)
+		}
+	}
+
 	if len(errs) > 0 {
 		return Draft{}, errs
 	}
@@ -80,6 +110,9 @@ func NewDraft(
 		UnitPrice:               unitPrice,
 		StockQuantity:           stockQuantity,
 		FiscalProfileExternalID: fiscalProfileExternalID,
+		NCM:                     ncm,
+		Origin:                  origin,
+		CEST:                    cest,
 	}, nil
 }
 

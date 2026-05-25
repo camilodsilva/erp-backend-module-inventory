@@ -87,6 +87,9 @@ CREATE SCHEMA IF NOT EXISTS $TENANT_SCHEMA;
 
   sed "s/{{schema}}/$TENANT_SCHEMA/g" "$COMMON_DIR/data/migrations/tenant/2001_inventory_product.sql" \
     | psql_file >/dev/null
+
+  sed "s/{{schema}}/$TENANT_SCHEMA/g" "$COMMON_DIR/data/migrations/tenant/2002_inventory_product_fiscal_fields.sql" \
+    | psql_file >/dev/null
 }
 
 assert_services() {
@@ -145,12 +148,14 @@ main() {
   response="$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/inventories/products" \
     -H "Authorization: Bearer $token" \
     -H 'Content-Type: application/json' \
-    -d '{"title":"Camiseta Branca P","description":"Camiseta 100% algodao","sku":"cam-bra-p","ean":"7891234567890","unit":"un","unit_price":49.90,"stock_quantity":100}')"
+    -d '{"title":"Camiseta Branca P","description":"Camiseta 100% algodao","sku":"cam-bra-p","ean":"7891234567890","unit":"un","unit_price":49.90,"stock_quantity":100,"ncm":"61091000","origin":"0"}')"
   http_code="$(printf '%s' "$response" | tail -n1)"
   body="$(printf '%s' "$response" | sed '$d')"
   assert_status "INT-PRODUCT-03 criar produto" "201" "$http_code"
   assert_body_contains "INT-PRODUCT-03 sku normalizado" "$body" '"sku":"CAM-BRA-P"'
   assert_body_contains "INT-PRODUCT-03 unit normalizada" "$body" '"unit":"UN"'
+  assert_body_contains "INT-PRODUCT-03 ncm retornado" "$body" '"ncm":"61091000"'
+  assert_body_contains "INT-PRODUCT-03 origin retornado" "$body" '"origin":"0"'
   assert_body_absent "INT-PRODUCT-03 sem created_by" "$body" '"created_by"'
   assert_body_absent "INT-PRODUCT-03 sem updated_by" "$body" '"updated_by"'
   product_id="$(json_field "$body" id)"
@@ -159,7 +164,7 @@ main() {
   response="$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/inventories/products" \
     -H "Authorization: Bearer $token" \
     -H 'Content-Type: application/json' \
-    -d '{"title":"SKU duplicado","sku":"cam-bra-p","unit":"UN","unit_price":10}')"
+    -d '{"title":"SKU duplicado","sku":"cam-bra-p","unit":"UN","unit_price":10,"ncm":"61091000","origin":"0"}')"
   http_code="$(printf '%s' "$response" | tail -n1)"
   body="$(printf '%s' "$response" | sed '$d')"
   assert_status "INT-PRODUCT-04 bloquear SKU duplicado" "409" "$http_code"
@@ -189,11 +194,13 @@ main() {
   response="$(curl -s -w '\n%{http_code}' -X PUT "$BASE_URL/api/inventories/products/$product_id" \
     -H "Authorization: Bearer $token" \
     -H 'Content-Type: application/json' \
-    -d '{"title":"Camiseta Branca P Atualizada","sku":"cam-bra-p","unit":"un","unit_price":59.90,"stock_quantity":80}')"
+    -d '{"title":"Camiseta Branca P Atualizada","sku":"cam-bra-p","unit":"un","unit_price":59.90,"stock_quantity":80,"ncm":"61091000","origin":"1","cest":"1010100"}')"
   http_code="$(printf '%s' "$response" | tail -n1)"
   body="$(printf '%s' "$response" | sed '$d')"
   assert_status "INT-PRODUCT-08 atualizar produto" "200" "$http_code"
   assert_body_contains "INT-PRODUCT-08 titulo atualizado" "$body" '"title":"Camiseta Branca P Atualizada"'
+  assert_body_contains "INT-PRODUCT-08 origin atualizado" "$body" '"origin":"1"'
+  assert_body_contains "INT-PRODUCT-08 cest atualizado" "$body" '"cest":"1010100"'
 
   response="$(curl -s -w '\n%{http_code}' -X DELETE "$BASE_URL/api/inventories/products/$product_id" \
     -H "Authorization: Bearer $token")"
@@ -206,6 +213,38 @@ main() {
   body="$(printf '%s' "$response" | sed '$d')"
   assert_status "INT-PRODUCT-10 buscar deletado" "404" "$http_code"
   assert_body_contains "INT-PRODUCT-10 mensagem not found" "$body" '"message":"product not found"'
+
+  response="$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/inventories/products" \
+    -H "Authorization: Bearer $token" \
+    -H 'Content-Type: application/json' \
+    -d '{"title":"Produto sem NCM","sku":"SEM-NCM","unit":"UN","unit_price":10,"ncm":"123","origin":"0"}')"
+  http_code="$(printf '%s' "$response" | tail -n1)"
+  body="$(printf '%s' "$response" | sed '$d')"
+  assert_status "INT-PRODUCT-11 ncm invalido retorna 400" "400" "$http_code"
+  assert_body_contains "INT-PRODUCT-11 mensagem ncm invalido" "$body" '"message":"ncm must contain exactly 8 digits"'
+
+  response="$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/inventories/products" \
+    -H "Authorization: Bearer $token" \
+    -H 'Content-Type: application/json' \
+    -d '{"title":"Produto Busca","sku":"PROD-BUSCA","unit":"UN","unit_price":29.90,"ncm":"84713012","origin":"0"}')"
+  http_code="$(printf '%s' "$response" | tail -n1)"
+  body="$(printf '%s' "$response" | sed '$d')"
+  assert_status "INT-PRODUCT-12 criar produto para busca" "201" "$http_code"
+
+  response="$(curl -s -w '\n%{http_code}' "$BASE_URL/api/inventories/products?q=busca" \
+    -H "Authorization: Bearer $token")"
+  http_code="$(printf '%s' "$response" | tail -n1)"
+  body="$(printf '%s' "$response" | sed '$d')"
+  assert_status "INT-PRODUCT-13 busca por q retorna 200" "200" "$http_code"
+  assert_body_contains "INT-PRODUCT-13 encontrou produto" "$body" '"total":1'
+  assert_body_contains "INT-PRODUCT-13 titulo correto" "$body" '"title":"Produto Busca"'
+
+  response="$(curl -s -w '\n%{http_code}' "$BASE_URL/api/inventories/products?q=zzz_inexistente" \
+    -H "Authorization: Bearer $token")"
+  http_code="$(printf '%s' "$response" | tail -n1)"
+  body="$(printf '%s' "$response" | sed '$d')"
+  assert_status "INT-PRODUCT-14 busca sem resultado retorna 200" "200" "$http_code"
+  assert_body_contains "INT-PRODUCT-14 total zero" "$body" '"total":0'
 
   printf '\nTodos os testes de integração do CRUD de produtos passaram.\n'
 }

@@ -20,6 +20,9 @@ func (f *ProductFactory) Create(actorID string, draft Draft) Product {
 		StockQuantity:           draft.StockQuantity,
 		IsActive:                true,
 		FiscalProfileExternalID: draft.FiscalProfileExternalID,
+		NCM:                     draft.NCM,
+		Origin:                  draft.Origin,
+		CEST:                    draft.CEST,
 		CreatedBy:               actorID,
 		UpdatedBy:               actorID,
 	}

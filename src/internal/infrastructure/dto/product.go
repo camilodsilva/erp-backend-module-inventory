@@ -17,6 +17,9 @@ type (
 		UnitPrice               *float64 `json:"unit_price"`
 		StockQuantity           float64  `json:"stock_quantity"`
 		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
+		NCM                     string   `json:"ncm"`
+		Origin                  string   `json:"origin"`
+		CEST                    *string  `json:"cest"`
 	}
 
 	UpdateProductRequest struct {
@@ -28,6 +31,9 @@ type (
 		UnitPrice               *float64 `json:"unit_price"`
 		StockQuantity           float64  `json:"stock_quantity"`
 		FiscalProfileExternalID string   `json:"fiscal_profile_external_id"`
+		NCM                     string   `json:"ncm"`
+		Origin                  string   `json:"origin"`
+		CEST                    *string  `json:"cest"`
 	}
 
 	ProductResponse struct {
@@ -41,6 +47,9 @@ type (
 		StockQuantity           float64 `json:"stock_quantity"`
 		IsActive                bool    `json:"is_active"`
 		FiscalProfileExternalID string  `json:"fiscal_profile_external_id,omitempty"`
+		NCM                     string  `json:"ncm"`
+		Origin                  string  `json:"origin"`
+		CEST                    *string `json:"cest,omitempty"`
 		CreatedAt               string  `json:"created_at"`
 		UpdatedAt               string  `json:"updated_at"`
 	}
@@ -55,6 +64,7 @@ func (r CreateProductRequest) ToDraft() (product.Draft, error) {
 		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
 		*r.UnitPrice, r.StockQuantity,
 		r.FiscalProfileExternalID,
+		r.NCM, r.Origin, r.CEST,
 	)
 	if len(errs) > 0 {
 		return product.Draft{}, errors.Join(errs...)
@@ -71,6 +81,7 @@ func (r UpdateProductRequest) ToDraft() (product.Draft, error) {
 		r.Title, r.Description, r.SKU, r.EAN, r.Unit,
 		*r.UnitPrice, r.StockQuantity,
 		r.FiscalProfileExternalID,
+		r.NCM, r.Origin, r.CEST,
 	)
 	if len(errs) > 0 {
 		return product.Draft{}, errors.Join(errs...)
@@ -90,6 +101,9 @@ func NewProductResponse(p product.Product) ProductResponse {
 		StockQuantity:           p.StockQuantity,
 		IsActive:                p.IsActive,
 		FiscalProfileExternalID: p.FiscalProfileExternalID,
+		NCM:                     p.NCM,
+		Origin:                  p.Origin,
+		CEST:                    p.CEST,
 		CreatedAt:               p.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:               p.UpdatedAt.UTC().Format(time.RFC3339),
 	}

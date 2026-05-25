@@ -20,6 +20,9 @@ var (
 	ErrEANInvalid                     = errors.New("ean must contain 8, 13 or 14 digits")
 	ErrFiscalProfileExternalIDInvalid = errors.New("fiscal_profile_external_id is not a valid UUID")
 	ErrProductIDInvalid               = errors.New("product id is not a valid UUID")
+	ErrNCMInvalid                     = errors.New("ncm must contain exactly 8 digits")
+	ErrOriginInvalid                  = errors.New("origin must be a single digit between 0 and 8")
+	ErrCESTInvalid                    = errors.New("cest must contain exactly 7 digits")
 )
 
 type (
@@ -34,6 +37,9 @@ type (
 		StockQuantity           float64
 		IsActive                bool
 		FiscalProfileExternalID string
+		NCM                     string
+		Origin                  string
+		CEST                    *string
 		CreatedBy               string
 		UpdatedBy               string
 		CreatedAt               time.Time
@@ -72,6 +78,9 @@ func (p Product) Update(draft Draft, actorID string) Product {
 	p.UnitPrice = draft.UnitPrice
 	p.StockQuantity = draft.StockQuantity
 	p.FiscalProfileExternalID = draft.FiscalProfileExternalID
+	p.NCM = draft.NCM
+	p.Origin = draft.Origin
+	p.CEST = draft.CEST
 	p.UpdatedBy = actorID
 	return p
 }

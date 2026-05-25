@@ -18,7 +18,7 @@ func TestUpdateProductUseCase_Execute_Success(t *testing.T) {
 		},
 	}
 	uc := NewUpdateUseCase(repo)
-	draft, _ := NewDraft("Nova", "", "NEW", "", "UN", 20, 5, "")
+	draft, _ := NewDraft("Nova", "", "NEW", "", "UN", 20, 5, "", "01012100", "0", nil)
 
 	got, err := uc.Execute("tenant-id", "product-id", "actor-id", draft)
 	if err != nil {
@@ -36,7 +36,7 @@ func TestUpdateProductUseCase_Execute_NotFound(t *testing.T) {
 		},
 	}
 	uc := NewUpdateUseCase(repo)
-	draft, _ := NewDraft("Nova", "", "NEW", "", "UN", 20, 5, "")
+	draft, _ := NewDraft("Nova", "", "NEW", "", "UN", 20, 5, "", "01012100", "0", nil)
 
 	_, err := uc.Execute("tenant-id", "missing-id", "actor-id", draft)
 	if !errors.Is(err, ErrProductNotFound) {
@@ -55,7 +55,7 @@ func TestUpdateProductUseCase_Execute_UpdateError(t *testing.T) {
 		},
 	}
 	uc := NewUpdateUseCase(repo)
-	draft, _ := NewDraft("Nova", "", "NEW", "", "UN", 20, 5, "")
+	draft, _ := NewDraft("Nova", "", "NEW", "", "UN", 20, 5, "", "01012100", "0", nil)
 
 	_, err := uc.Execute("tenant-id", "product-id", "actor-id", draft)
 	if !errors.Is(err, updateErr) {
