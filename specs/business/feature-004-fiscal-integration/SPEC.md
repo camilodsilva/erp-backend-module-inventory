@@ -20,9 +20,55 @@ Adiciona filtro textual opcional `?q=` ao endpoint existente `GET /api/inventori
 
 ## Impacto em Segurança e LGPD
 
-- `q` é passado como parâmetro posicionado (`$3`) — sem concatenação, sem risco de SQL injection
-- O valor `%q%` é montado em Go com `fmt.Sprintf("%%%s%%", q)` antes do bind — o `%` é literal, não SQL
-- Não expõe dados adicionais além do já retornado pelo `FindAll` atual
+- **Autenticação/Autorização por role:** operação de leitura — exige `inventory.read`. Todos os middlewares da fundação se aplicam (JWT → feature gate → role check).
+- **Autorização por recurso/tenant:** busca filtra apenas pelo schema do tenant derivado do JWT. Sem acesso cross-tenant.
+- **Validação de entrada no Draft/VO:** `?q=` é extraído como string, trimado de espaços em Go (`strings.TrimSpace`), passado como parâmetro posicional. Sem validação adicional de domínio necessária.
+- **Proteção contra mass assignment:** não aplicável — operação de leitura.
+- **Minimização de dados em responses:** response idêntico ao `FindAll` — sem campos adicionais expostos.
+- **SQL Injection:** `q` é passado como parâmetro posicional (`$3`). O padrão `%q%` é montado em Go com `fmt.Sprintf("%%%s%%", q)` antes do bind — `%` é literal Go, não SQL.
+- **Isolamento de tenant:** queries incluem schema do tenant em `FROM %s.inventory_product`.
+- **Concorrência e idempotência:** leitura pura — sem efeito colateral.
+- **Auditoria:** sem operações de escrita.
+- **Logs e observabilidade:** sem PII exposto.
+- **Segredos e credenciais:** não aplicável.
+- **Rate limit e abuso:** `ILIKE '%q%'` pode causar full table scan em catálogos grandes; mitigado pelo limite de `size` máximo de 100 no MVP.
+- **Dados pessoais (LGPD):** produtos são dados de negócio — sem PII.
+
+---
+
+## Decisões de Domínio e Clean Architecture
+
+**Decisão: `?q=` no endpoint existente (não endpoint separado):** opção retrocompatível que mantém contrato simples. Requests sem `?q=` funcionam identicamente ao comportamento anterior. A adição de `q string` à interface `Repository.FindAll` é a única mudança de contrato de domínio necessária.
+
+**Impacto na interface de domínio:** `Repository.FindAll(tenantID string, page, size int, q string)` — quarto parâmetro adicionado. O mock e todos os usos existentes atualizam a assinatura. O value object `Draft` não é afetado — `q` não é um campo de criação/atualização, apenas um filtro de consulta.
+
+**Repositório concreto:** quando `q == ""`, usa `findAllProductsQuery` e `countProductsQuery` (sem filtragem). Quando `q != ""`, usa `findAllProductsWithSearchQuery` e `countProductsWithSearchQuery` com `AND (title ILIKE $3 OR sku ILIKE $3)`. Duas constantes de query adicionadas — sem alteração de `scanProductRow`/`scanProductRows`.
+
+**Handler:** extrai `q := strings.TrimSpace(c.Query("q"))` e repassa ao use case. Strings com apenas espaços são tratadas como `""` (sem filtro).
+
+**Checklist de Qualidade Arquitetural:**
+- [x] DDD: não há regra de negócio nova; `q` é apenas um filtro de consulta operacional
+- [x] Modelo não anêmico: sem mudança em entidades ou VOs
+- [x] Use cases: `FindAllUseCase.Execute` apenas repassa `q` ao repositório
+- [x] Infraestrutura: lógica de `ILIKE` fica no repositório Postgres — correto
+- [x] Clean Architecture: domínio recebe `q` como parâmetro simples sem conhecer SQL
+- [x] Contratos: retrocompatibilidade garantida — sem `?q=` = comportamento anterior
+- [x] Banco/modelagem: sem tabelas novas
+- [x] TDD: 4 novos cenários de teste cobrindo busca com resultado, sem resultado e paginação com filtro
+- [x] Padrões CDStudio: SQL como const, sem concatenação
+
+---
+
+## Débitos Técnicos da Feature
+
+| Código | Origem | Débito técnico | Camada | Arquivos previstos | Verificação |
+|--------|--------|----------------|--------|--------------------|-------------|
+| DT-001 | RN-001 | Adicionar `q string` à interface `Repository.FindAll` e atualizar mock | Domínio | `domain/product/entity_product.go`, `domain/product/mock_repository.go` | Compilação sem erros |
+| DT-002 | RN-001 | Atualizar `FindAllUseCase.Execute` para receber e repassar `q string` | Domínio | `domain/product/usecase_find_all.go` | Compilação sem erros |
+| DT-003 | RN-002, RN-003, RN-004, RN-005 | Implementar queries `findAllProductsWithSearchQuery` e `countProductsWithSearchQuery` com `ILIKE`; atualizar método `FindAll` do repositório | Infra | `infrastructure/postgres/product.go` | Teste integrado `product_search.sh` |
+| DT-004 | RN-001 | Atualizar `HandleList` para extrair `?q=` com `strings.TrimSpace` e repassar ao use case | HTTP | `infrastructure/rest/product.go` | Curl `?q=%20%20` → total igual a listagem sem filtro |
+| DT-005 | RN-002, RN-003, RN-004, RN-005, RN-006 | Implementar testes unitários do `FindAllUseCase` com `q` não vazio | Teste | `domain/product/usecase_find_all_test.go` | `go test ./src/internal/domain/product/...` |
+| DT-006 | RN-001 a RN-006 | Implementar script de teste integrado `product_search.sh` | Teste/Integração | `scripts/integration/product_search.sh` | `bash scripts/integration/product_search.sh` |
 
 ---
 

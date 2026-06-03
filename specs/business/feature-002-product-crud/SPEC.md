@@ -8,14 +8,88 @@ SPEC retrospectivo: o domínio `product` já está implementado. Esta spec docum
 
 ## Impacto em Segurança e LGPD
 
-- SKU normalizado para uppercase no `Draft` — unicidade case-insensitive garantida pela normalização, não por `LOWER()` no índice
-- Todas as queries parametrizadas com `$N` — sem concatenação
-- Schema do tenant interpolado via `fmt.Sprintf` com `shared.SchemaName(tenantID)` — `tenantID` vem do JWT, nunca do body
-- `created_by` e `updated_by` extraídos do contexto JWT (`actor_id`), nunca do body da request
-- `created_by` e `updated_by` persistidos para auditoria, mas não expostos no JSON público do produto
-- Soft delete preenche `deleted_at`, `deleted_by`, `updated_at`, `updated_by` — registros auditáveis
-- `fiscal_profile_external_id` tratado como UUID opaco — sem FK cross-module, sem chamada ao módulo fiscal
-- `description`, `ean`, `fiscal_profile_external_id` e `deleted_by` armazenados como nullable — omitidos do JSON com `omitempty` quando vazios
+- **Autenticação/Autorização por role:** operações de leitura exigem `inventory.read`; escrita exige `inventory.write`. Validação feita por middlewares antes de qualquer handler.
+- **Autorização por recurso/tenant:** todas as queries de produto filtram pelo schema do tenant derivado do JWT. `tenantID` e `actorID` nunca vêm do body.
+- **Validação de entrada no Draft/VO:** `product.NewDraft` valida todos os campos com collect-all (`[]error`) — título, SKU, unidade, preço, quantidade, EAN, UUID fiscal, NCM, origin, CEST. `NewIdentifier` valida UUID de path param.
+- **Proteção contra mass assignment:** `id` (UUIDv7 gerado pela factory), `is_active` (sempre `true` na criação), `created_by`, `updated_by`, `created_at`, `updated_at`, `deleted_at`, `deleted_by` são definidos pelo servidor. Nenhum desses campos é aceito do body.
+- **Minimização de dados em responses:** `created_by` e `updated_by` não são expostos no JSON público do produto (MVP). `description`, `ean`, `fiscal_profile_external_id`, `cest` usam `omitempty`.
+- **SQL Injection e queries parametrizadas:** todas as queries usam `$N`. O schema do tenant é interpolado com `fmt.Sprintf` usando `shared.SchemaName(tenantID)` — `tenantID` vem do JWT e é validado como UUID antes de chegar ao repositório.
+- **Isolamento de tenant no banco:** todas as queries operam no schema do tenant derivado do token. `UPDATE` e `DELETE` incluem `AND deleted_at IS NULL` no `WHERE`.
+- **Concorrência e idempotência:** índice único parcial `inventory_product__sku_uk WHERE deleted_at IS NULL` garante unicidade de SKU no banco em race conditions.
+- **Auditoria:** `created_by`, `updated_by`, `created_at`, `updated_at` em todas as operações. Soft delete registra `deleted_by` e `deleted_at`. Registros não são destruídos.
+- **Logs e observabilidade:** erros de banco logados por categoria — sem PII ou payload sensível.
+- **Segredos e credenciais:** nenhum segredo adicional nesta feature.
+- **Rate limit e abuso:** não implementado no MVP. Operações protegidas por autenticação e role.
+- **Dados pessoais (LGPD):** produtos são dados de negócio do tenant — sem PII de pessoas físicas. `created_by`/`updated_by` armazenam UUIDs técnicos de colaboradores.
+
+---
+
+## Decisões de Domínio e Clean Architecture
+
+### Entidade `Product`
+
+Struct central do domínio com todos os campos do produto, incluindo campos fiscais (`NCM`, `Origin`, `CEST`), auditoria (`CreatedBy`, `UpdatedBy`, `CreatedAt`, `UpdatedAt`) e soft delete (`DeletedAt`, `DeletedBy`).
+
+Método `Update(draft Draft, actorID string) Product` na entidade encapsula a transição de estado de atualização — o use case não copia campos do Draft diretamente.
+
+### Value Object `Draft`
+
+`NewDraft` implementa variante collect-all (`[]error`): todos os campos são validados independentemente e todos os erros são retornados de uma vez. Normaliza SKU e unidade para uppercase. Valida EAN, UUID fiscal, NCM (regex 8 dígitos), origin (regex dígito 0-8), CEST (regex 7 dígitos, opcional).
+
+### Value Object `Identifier` (`vo_identifier.go`)
+
+`NewIdentifier(id string) (string, error)` valida que o path param é um UUID válido antes de chegar ao repositório, evitando queries desnecessárias com IDs malformados.
+
+### Factory `ProductFactory`
+
+Obrigatória porque a criação exige geração de ID (UUIDv7), preenchimento de `CreatedBy`, `UpdatedBy` e `IsActive: true`. O use case `CreateUseCase` não conhece a implementação do gerador de ID — recebe apenas a interface `IDGenerator`.
+
+### Use Cases
+
+- `CreateUseCase.Execute(tenantID, actorID, draft)` — chama factory, persiste, retorna produto criado
+- `FindAllUseCase.Execute(tenantID, page, size, q)` — delega paginação e filtro ao repositório
+- `FindByIDUseCase.Execute(tenantID, id)` — delega busca ao repositório
+- `UpdateUseCase.Execute(tenantID, id, actorID, draft)` — busca entidade atual, chama `Product.Update()`, persiste
+- `DeleteUseCase.Execute(tenantID, id, actorID)` — chama `SoftDelete` no repositório
+
+Nenhum use case contém `if` com política de negócio — apenas orquestram fluxo.
+
+### Repositório
+
+Interface `Repository` declarada no domínio. `ProductPostgresRepository` (infraestrutura) implementa com queries SQL como constantes `const` no topo do arquivo. Erros Postgres mapeados para erros de domínio (`23505` → `ErrProductAlreadyExists`, `sql.ErrNoRows` → `ErrProductNotFound`).
+
+### DTOs e Handler
+
+`CreateProductRequest.ToDraft()` e `UpdateProductRequest.ToDraft()` convertem o body JSON em `Draft` — usando `errors.Join` para consolidar erros da variante collect-all. `productHttpHandler` tem construtor privado `newProductHttpHandler(db)`. Handler não valida regra de negócio — apenas parseia, chama use case e responde HTTP.
+
+**Checklist de Qualidade Arquitetural:**
+- [x] DDD: todas as regras de validação estão no `Draft` (VO); transição de atualização está na entidade `Product.Update()`
+- [x] Modelo não anêmico: `Product.Update()` encapsula a mudança de estado; `NewAccessStatus` no domínio access
+- [x] Use cases: apenas orquestram — sem IFs de política de negócio
+- [x] Infraestrutura: repositório, DTO e handler sem regra de negócio
+- [x] Clean Architecture: domínio não importa pacotes de infraestrutura
+- [x] Contratos: response minimiza dados (`created_by`/`updated_by` não expostos no MVP)
+- [x] Banco/modelagem: migrations `2001` e `2002` documentadas em MODELING.md
+- [x] TDD: cobertura unitária de todas as variantes de validação e todos os use cases
+- [x] Padrões CDStudio: um arquivo por use case, mock manual, SQL como const, construtor privado
+
+---
+
+## Débitos Técnicos da Feature
+
+| Código | Origem | Débito técnico | Camada | Arquivos previstos | Verificação |
+|--------|--------|----------------|--------|--------------------|-------------|
+| DT-001 | RN-001 a RN-011 | Implementar `Draft` com validação collect-all de todos os campos (incluindo NCM, origin, CEST) | Domínio | `domain/product/vo_draft.go` | `go test ./src/internal/domain/product/...` |
+| DT-002 | RN-002, RN-004 | Normalizar SKU para uppercase e unit para uppercase no Draft | Domínio | `domain/product/vo_draft.go` | Testes de normalização |
+| DT-003 | RN-003 | Índice único parcial `sku WHERE deleted_at IS NULL` na migration | Banco | `2001_inventory_product.sql` | Tentativa de duplicação retorna 409 |
+| DT-004 | RN-014 | Factory `ProductFactory` com `IDGenerator` para isolar geração de UUID e auditoria inicial | Domínio | `domain/product/factory_product.go` | `go test ./src/internal/domain/product/...` |
+| DT-005 | RN-001 a RN-014 | Implementar repositório Postgres com soft delete, scan de campos nullable e mapeamento de erros | Infra | `infrastructure/postgres/product.go` | Testes integrados |
+| DT-006 | RN-012, RN-013 | Soft delete: preencher `deleted_at`, `deleted_by`, `updated_at`, `updated_by` no `SoftDelete` do repositório | Infra | `infrastructure/postgres/product.go` | DELETE → 204; GET do deletado → 404; novo produto com mesmo SKU → 201 |
+| DT-007 | RN-014 | Handler extrai `actor_id` do contexto JWT — nunca do body | HTTP | `infrastructure/rest/product.go` | Criar produto e verificar que `created_by` no banco é o UUID do colaborador |
+| DT-008 | RN-015 | `CreateProductRequest.ToDraft()` usa `errors.Join` para consolidar erros collect-all | HTTP/DTO | `infrastructure/dto/product.go` | Request com múltiplos campos inválidos → 400 com todos os erros |
+| DT-009 | RN-001 a RN-015 | Testes unitários de todos os use cases e variantes do Draft | Teste | `domain/product/*_test.go` | `go test ./...` |
+| DT-010 | RN-001 a RN-015 | Script de teste integrado do CRUD completo via HTTP | Teste/Integração | `scripts/integration/product_crud.sh` | Execução do script sem falhas |
+| DT-011 | RN-009, RN-010, RN-011 | Migration `2002_inventory_product_fiscal_fields.sql` adicionando `ncm`, `origin`, `cest` | Banco | `erp-backend-module-common/data/migrations/tenant/2002_inventory_product_fiscal_fields.sql` | Campos presentes na tabela após migration |
 
 ---
 

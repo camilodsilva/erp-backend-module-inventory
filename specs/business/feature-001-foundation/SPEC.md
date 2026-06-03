@@ -8,11 +8,79 @@ SPEC retrospectivo: o módulo já está implementado. Esta spec documenta os 17 
 
 ## Impacto em Segurança e LGPD
 
-- JWT validado no middleware `RequireCollaboratorAuth` — header `Authorization: Bearer <token>`, assinatura HMAC HS256 verificada antes de qualquer handler
-- `company_id` e `tenant_id` extraídos do token, nunca do body — prevenção de spoofing
-- Feature gate consulta `public.company_features` via query parametrizada (`$1`, `$2`) — sem concatenação
-- Roles `inventory.read` e `inventory.write` controlam acesso granular por operação
-- Nenhum dado pessoal coletado nesta feature — apenas metadados de permissão
+- **Autenticação/Autorização por role:** `RequireCollaboratorAuth` valida JWT HMAC HS256 antes de qualquer handler protegido. Roles `inventory.read` e `inventory.write` controlam acesso granular. O endpoint `/health` é público.
+- **Autorização por recurso/tenant:** `tenant_id` e `company_id` extraídos exclusivamente do JWT assinado — nunca do body ou query params. Feature gate usa `company_id` do token para consultar `public.company_features`.
+- **Validação de entrada no Draft/VO:** `access.NewDraft` valida que `tenantID` não está vazio antes de construir o draft. Sem entrada adicional do usuário nesta feature.
+- **Proteção contra mass assignment:** endpoint `/access` não aceita body. Nenhum campo controlado pelo servidor pode ser enviado pelo cliente.
+- **Minimização de dados em responses:** `/access` retorna apenas metadados de permissão (`module`, `enabled`, `can_read`, `can_write`, `ready`, `pending_requirements`). Nenhum dado pessoal.
+- **SQL Injection e queries parametrizadas:** a query do feature gate usa `$1` e `$2` — sem concatenação de strings SQL.
+- **Isolamento de tenant no banco:** feature gate filtra por `company_id` do token. `SchemaName(tenantID)` deriva o schema dinamicamente a partir do UUID do token.
+- **Concorrência, idempotência e replay:** `/access` é leitura pura — idempotente por natureza. Feature gate é stateless.
+- **Auditoria:** nenhuma operação de escrita nesta feature. Campos de auditoria são preparados na migration da tabela de produtos para uso nas features seguintes.
+- **Logs e observabilidade:** erros são logados por categoria — sem exposição de token, senha, PII ou payload sensível.
+- **Segredos e credenciais:** `JWT_SECRET` configurado exclusivamente via variável de ambiente. Validado na inicialização com `log.Fatal` se ausente.
+- **Rate limit e abuso:** não aplicável para o MVP. Endpoints de saúde e acesso são de baixo risco.
+- **Dados pessoais (LGPD):** nenhum dado pessoal coletado ou processado nesta feature.
+
+---
+
+## Decisões de Domínio e Clean Architecture
+
+### Domínio `access`
+
+O domínio `access` é deliberadamente simples: não tem repositório (não persiste estado), apenas verifica permissões já resolvidas pelos middlewares.
+
+**Entidade `AccessStatus`:**
+- Struct pura de domínio que representa o resultado da verificação de acesso
+- Construída pelo `NewAccessStatus(canRead, canWrite bool)` — construtora de domínio pura
+- Campos: `Module`, `Enabled`, `CanRead`, `CanWrite`, `Ready`, `PendingRequirements`
+
+**Value Object `Draft` (domínio access):**
+- `NewDraft(tenantID string, canRead, canWrite bool)` — valida que `tenantID` não está vazio
+- Encapsula os dados de entrada da verificação de acesso
+
+**Use case `CheckUseCase`:**
+- Não tem repositório — orquestra apenas a criação do `AccessStatus` a partir do draft
+- Representa o padrão de "use case sem persistência": válido quando o resultado deriva exclusivamente de dados já validados e contexto do token
+
+**Feature gate (infraestrutura):**
+- `featuregate.RequireInventoryFeature` é middleware de infraestrutura, não domínio
+- Usa interface interna `featureGateRepository` — testável sem banco real
+- A decisão de bloquear ou não é feita pelo resultado booleano do banco — sem regra de negócio no middleware além do gate
+
+**Roles (infraestrutura):**
+- `auth.CanReadFeature` e `auth.CanWriteFeature` são funções puras de infraestrutura
+- Aceitam roles genéricas (`read`, `write`) além das específicas (`inventory.read`, `inventory.write`) por extensibilidade
+
+**Fronteiras respeitadas:**
+- Domínio `access` não conhece HTTP, banco, Gin ou JWT
+- Middlewares e handlers são infraestrutura pura — não contêm regra de negócio
+- `main.go` é apenas wiring — sem lógica de negócio
+
+**Checklist de Qualidade Arquitetural:**
+- [x] DDD: regra de negócio (validação de tenantID) está no VO `access.NewDraft`
+- [x] Modelo não anêmico: `NewAccessStatus` constrói o estado completo de uma vez
+- [x] Use case: `CheckUseCase` apenas orquestra — sem decisão de política de negócio
+- [x] Infraestrutura: `featuregate`, `auth`, handlers e router não contêm regra de negócio
+- [x] Clean Architecture: domínio não importa pacotes de infraestrutura, HTTP ou banco
+- [x] Contratos: response de `/access` minimiza dados expostos
+- [x] Banco/modelagem: migration `2001_inventory_product.sql` cria a tabela no schema do tenant
+- [x] TDD: testes cobrem `vo_draft` e `usecase_check` do domínio access
+- [x] Padrões CDStudio: um arquivo por use case, mock manual, SQL como constantes, construtor privado para handler
+
+---
+
+## Débitos Técnicos da Feature
+
+| Código | Origem | Débito técnico | Camada | Arquivos previstos | Verificação |
+|--------|--------|----------------|--------|--------------------|-------------|
+| DT-001 | RN-001, RN-002, RN-003 | Implementar middleware `RequireCollaboratorAuth` com validação de JWT, tipo de token e UUID do tenant | Infra/Auth | `auth/jwt.go`, `auth/middleware.go` | `curl` sem token → 401; token de manager → 403 |
+| DT-002 | RN-004 | Implementar middleware `RequireInventoryFeature` consultando `public.company_features` | Infra/FeatureGate | `featuregate/middleware.go` | Colaborador sem feature → 403 |
+| DT-003 | RN-005 | Implementar funções `CanReadFeature`/`CanWriteFeature` e middlewares `RequireFeatureRead`/`RequireFeatureWrite` | Infra/Auth | `auth/roles.go` | Colaborador sem role write tenta criar → 403 |
+| DT-004 | RN-006 | Implementar endpoint `GET /api/inventories/health` sem autenticação | HTTP | `rest/router.go` | `curl localhost:8082/api/inventories/health` → 200 |
+| DT-005 | RN-007, RN-008 | Implementar domínio `access` com `Draft`, `AccessStatus`, `CheckUseCase` e handler `/access` | Domínio/HTTP | `domain/access/*.go`, `rest/access.go` | `GET /access` com token válido → 200 com campos corretos |
+| DT-006 | RN-007 | Implementar testes unitários do domínio `access` | Teste | `domain/access/vo_draft_test.go`, `domain/access/usecase_check_test.go` | `go test ./src/internal/domain/access/...` |
+| DT-007 | RN-001, RN-004, RN-006, RN-007 | Implementar script de teste integrado da fundação | Teste/Integração | `scripts/integration/inventory_foundation.sh` | `bash scripts/integration/inventory_foundation.sh` |
 
 ---
 

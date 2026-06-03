@@ -2,7 +2,42 @@
 
 ## Resumo Executivo
 
-Configura o deploy do `erp-backend-module-inventory` na VPS de homologação via CI/CD existente. O workflow `.github/workflows/deploy.yml` já está implementado no repositório — o que resta são exclusivamente configurações manuais no GitHub e na VPS: secrets, environment, entradas no `docker-compose.yml` e `nginx.conf` do servidor.
+Configura o deploy do `erp-backend-module-inventory` na VPS de homologação via CI/CD existente. O workflow `.github/workflows/deploy.yml` já está implementado no repositório — o que resta são exclusivamente configurações manuais no GitHub e na VPS: secrets, environment, entradas no `docker-compose.yml` e `nginx.conf` do servidor. Nenhum arquivo do repositório precisa ser criado ou modificado.
+
+---
+
+## Impacto em Segurança e LGPD
+
+- **Autenticação/Autorização por role:** garantida pela implementação do módulo — nenhuma configuração adicional de infraestrutura necessária.
+- **Segredos e credenciais:** `VPS_SSH_KEY`, `GHCR_TOKEN` armazenados como secrets do environment `homologacao` no GitHub — nunca expostos em código ou logs. `JWT_SECRET` e `POSTGRES_PASSWORD` no `.env` da VPS — protegidos por permissões de filesystem.
+- **Isolamento de tenant:** garantido pela implementação — schemas Postgres por tenant.
+- **Logs e observabilidade:** logs do contêiner via stdout — sem PII ou segredos nos logs (garantido pela implementação).
+- **Dados pessoais (LGPD):** ambiente de homologação deve usar exclusivamente dados sintéticos ou anonimizados. Não usar dados de pessoas físicas reais.
+- **Exposição de porta:** módulo não expõe porta pública — acesso exclusivamente via proxy Nginx na rede Docker interna.
+- **Rate limit e abuso:** não implementado nesta capability. Nginx é o ponto de entrada — rate limiting global pode ser adicionado se necessário.
+
+---
+
+## Decisões de Domínio e Clean Architecture
+
+Esta capability é de infraestrutura operacional — sem código de domínio, use cases, repositórios ou handlers criados ou modificados.
+
+**Decisão técnica: sem mudanças no repositório.** O workflow CI/CD já existe em `.github/workflows/deploy.yml`. Toda a configuração é externa ao código: secrets do GitHub, arquivos na VPS e configuração do Nginx.
+
+**Checklist de Qualidade Arquitetural:**
+- N/A — capability de infraestrutura sem código de aplicação
+
+---
+
+## Débitos Técnicos da Feature
+
+| Código | Origem | Débito técnico | Camada | Arquivos previstos | Verificação |
+|--------|--------|----------------|--------|--------------------|-------------|
+| DT-001 | RN-005 | Criar environment `homologacao` no GitHub com os 4 secrets | Config/GitHub | (externo ao repo) | Pipeline verde em push na main |
+| DT-002 | RN-001, RN-003, RN-004 | Adicionar serviço `module-inventory` ao `docker-compose.yml` da VPS | Config/VPS | `/app/docker-compose.yml` (na VPS) | `docker compose ps module-inventory` → Up |
+| DT-003 | RN-003 | Inserir bloco `location /api/inventories/` no Nginx antes do `location /api/` genérico | Config/VPS | `/app/nginx/conf.d/api.conf` (na VPS) | `docker exec nginx nginx -t` → OK |
+| DT-004 | RN-001 | Verificar que `JWT_SECRET` no `.env` da VPS é idêntico ao do módulo common | Config/VPS | `/app/.env` (na VPS) | Token do common aceito pelo inventory |
+| DT-005 | RN-002 | Smoke test pós-deploy no endpoint de saúde | Verificação | Externo | `curl https://<dominio>/api/inventories/health` → 200 |
 
 ---
 
@@ -142,13 +177,31 @@ O workflow executa automaticamente:
 
 ---
 
-## Arquivos do Repositório
+## Ajustes no banco de dados
 
-Nenhum arquivo precisa ser criado ou modificado. O workflow já existe em:
+Sem ajustes de banco de dados e sem alteração em `MODELING.md`. As migrations de tenant já existem e são executadas pelo módulo common no provisionamento de empresas.
+
+---
+
+## Arquivos Modificados
+
+Nenhum arquivo do repositório é modificado por esta capability. Toda a configuração é externa ao código.
+
+---
+
+## Arquivos Criados
+
+Nenhum. O workflow CI/CD já existe em:
 
 ```
 erp-backend-module-inventory/.github/workflows/deploy.yml
 ```
+
+---
+
+## Arquivos Deletados
+
+Nenhum.
 
 ---
 

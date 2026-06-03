@@ -1,8 +1,61 @@
-# SPEC — Feature gate do inventário
+# SPEC — Feature Gate do Inventário
 
 ## Resumo Executivo
 
 Toda a implementação descrita nesta feature foi entregue como parte de `inventory.business.feature.001` (Fundação). Nenhum arquivo novo precisa ser criado ou modificado. Esta SPEC documenta os artefatos existentes que realizam o feature gate e o endpoint `/access`.
+
+---
+
+## Impacto em Segurança e LGPD
+
+- **Autenticação/Autorização por role:** feature gate é executado após validação JWT e antes de qualquer handler. Endpoint `/access` exige adicionalmente role `inventory.read`. Sequência de middlewares: `RequireCollaboratorAuth` → `RequireInventoryFeature` → `RequireFeatureRead("inventory")`.
+- **Autorização por recurso/tenant:** `company_id` para consulta de feature vem exclusivamente do JWT. Sem possibilidade de spoofing pelo cliente.
+- **Validação de entrada no Draft/VO:** `access.NewDraft` valida que `tenantID` não está vazio. Endpoint `/access` não aceita body.
+- **Proteção contra mass assignment:** não aplicável — sem body de entrada.
+- **Minimização de dados em responses:** response de `/access` expõe apenas metadados de permissão — sem PII ou dados do catálogo.
+- **SQL Injection:** query do feature gate usa `$1` e `$2` — sem concatenação.
+- **Isolamento de tenant:** `company_id` do token garante que a verificação é sempre para a empresa correta.
+- **Concorrência e idempotência:** verificação é leitura pura — sem efeito colateral.
+- **Auditoria:** sem operações de escrita.
+- **Logs e observabilidade:** erros de banco no feature gate retornam 500 — sem exposição de payload sensível.
+- **Segredos e credenciais:** nenhum segredo adicional além do `JWT_SECRET`.
+- **Rate limit e abuso:** não implementado no MVP.
+- **Dados pessoais (LGPD):** nenhum dado pessoal coletado ou processado.
+
+---
+
+## Decisões de Domínio e Clean Architecture
+
+**Feature gate como middleware de infraestrutura:** `RequireInventoryFeature` é middleware de infraestrutura pura — não contém regra de negócio além da decisão binária de bloquear ou não baseada no resultado do banco. A interface interna `featureGateRepository` permite testar o comportamento sem banco real.
+
+**Domínio `access` sem repositório:** `CheckUseCase` não persiste — orquestra apenas a construção de `AccessStatus` a partir do draft validado. Esse padrão é válido quando o resultado deriva exclusivamente de dados do token e não exige persistência.
+
+**Sequência de middlewares:** a ordem `autenticação → feature gate → role check` é intencional. O feature gate só executa depois que o colaborador está autenticado — sem autenticação, não há `company_id` disponível. O role check vem por último porque depende do feature gate já ter liberado o acesso.
+
+**Checklist de Qualidade Arquitetural:**
+- [x] DDD: regra de validação de `tenantID` está no VO `access.NewDraft`
+- [x] Modelo não anêmico: `NewAccessStatus` constrói estado completo
+- [x] Use cases: `CheckUseCase` apenas orquestra — sem política de negócio
+- [x] Infraestrutura: `RequireInventoryFeature` e `rolesFromContext` são infraestrutura pura
+- [x] Clean Architecture: domínio `access` não importa pacotes de infraestrutura
+- [x] Contratos: `/access` response minimiza dados
+- [x] Banco/modelagem: sem tabelas novas
+- [x] TDD: testes cobrem `vo_draft` e `usecase_check`; cenários de feature gate adequados para integração
+- [x] Padrões CDStudio: construtor privado, mock manual (stub vazio), SQL como const
+
+---
+
+## Débitos Técnicos da Feature
+
+Toda a implementação foi entregue na feature-001. Os DTs abaixo são de verificação.
+
+| Código | Origem | Débito técnico | Camada | Arquivos previstos | Verificação |
+|--------|--------|----------------|--------|--------------------|-------------|
+| DT-001 | RN-001 | Verificar que `RequireInventoryFeature` bloqueia com 403 quando feature não habilitada | Infra | `featuregate/middleware.go` | `bash scripts/integration/inventory_foundation.sh` |
+| DT-002 | RN-002 | Verificar que `/access` retorna `can_read`, `can_write`, `ready`, `pending_requirements` corretos | HTTP | `rest/access.go` | Curl com token de read-only → `can_write: false` |
+| DT-003 | RN-003 | Verificar que `/access` retorna 401 sem token | HTTP | `rest/router.go` (middleware) | `curl /access` sem Authorization → 401 |
+| DT-004 | RN-004 | Verificar que `pending_requirements: []` e `ready: true` para todo acesso concedido | Domínio | `domain/access/entity_access.go` | `go test ./src/internal/domain/access/...` |
+| DT-005 | RN-005 | Verificar que `company_id` do feature gate vem exclusivamente do JWT | Infra | `featuregate/middleware.go` | Code review — `c.GetString("company_id")` usa valor do contexto JWT |
 
 ---
 
